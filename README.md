@@ -1,0 +1,181 @@
+# bastion-scout
+
+Extractor secuencial de HonduCompras para alimentar Bastion. Mantiene los filtros del
+crawler anterior: Compra Menor (`2`) y Suministro de Bienes y/o Servicios (`1`).
+El crawler anterior permanece independiente.
+
+## Ejecución diaria
+
+Programa `main.py` cada hora. El programa interpreta siempre la hora de Honduras,
+independientemente de la zona horaria del servidor:
+
+- A las **19:00** comienza un ciclo diario nuevo.
+- Si el ciclo ya terminó, las siguientes invocaciones no vuelven a extraer ni analizar.
+- Si una etapa falla, la siguiente invocación reintenta únicamente lo pendiente.
+- Los reintentos terminan a las **13:00 del día siguiente**, sin incluir esa hora.
+- Entre las 13:00 y las 19:00 no se inicia trabajo nuevo.
+- Una etapa iniciada comprueba el cierre antes de cada solicitud y durante la lectura.
+  Las observaciones ya recibidas se consolidan localmente aunque se alcance el cierre.
+
+No se instala un cron ni se despliega nada automáticamente.
+
+## Instalación
+
+Python **3.10 o posterior**. En Linux, dentro de esta carpeta:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+cp config.example.json config.json
+.venv/bin/python main.py --check
+```
+
+Los caminos relativos de `config.json` se resuelven respecto a ese archivo.
+El directorio `data/` se crea automáticamente. En Windows se puede usar
+`.venv\Scripts\python.exe`.
+
+Ejemplo de cron, ajustando la ruta de instalación:
+
+```cron
+0 * * * * /opt/bastion-scout/.venv/bin/python /opt/bastion-scout/main.py --config /opt/bastion-scout/config.json
+```
+
+El proceso debe recibir `BASTION_AI_API_KEY` mediante el entorno del servicio o cron.
+La configuración no contiene la clave; tampoco se imprime ni se registra en los logs.
+El programa no carga archivos `.env` automáticamente.
+
+## Clasificación pendiente de la nueva skill
+
+La extracción y combinación ya funcionan sin configurar IA. Para habilitar el análisis:
+
+1. Coloca la nueva skill en el servidor y configura `ai.skill_path`.
+2. Añade sus referencias necesarias a `ai.reference_paths`; no se resuelven enlaces
+   Markdown automáticamente ni se envían instrucciones de exportación a Excel.
+3. Configura opcionalmente `ai.context_paths` con contexto seleccionado. No cargues
+   catálogos completos: el límite predeterminado de instrucciones más contexto es
+   128 KiB. Si se supera, se informa el error y no se trunca silenciosamente.
+4. Configura la variable de entorno `BASTION_AI_API_KEY`.
+
+El modelo configurado es `gpt-6-luna`, mediante Responses API y JSON Schema estricto.
+La integración sigue la [documentación del modelo](https://developers.openai.com/api/docs/models/gpt-6-luna)
+y la de [salidas estructuradas](https://developers.openai.com/api/docs/guides/structured-outputs?api-mode=responses).
+No se ha efectuado ninguna llamada de pago durante el desarrollo.
+
+Los cuatro campos devueltos son `puntaje` (entero 0–100), `rubro`, `resumen_corto`
+e `items` (lista de textos con cantidades y referencias cuando consten).
+Sin la skill o la clave, el maestro se conserva y la clasificación queda pendiente.
+Las reglas de puntuación nunca eliminan filas del maestro.
+
+## Archivos y responsabilidades
+
+| Archivo | Contenido |
+| --- | --- |
+| `main.py` / `data/main.json` | Horario, estado global, etapas pendientes y manifiesto de entrega. |
+| `scout.py` / `data/scout.json` | Extracción, páginas, corte, errores y detalles pendientes. |
+| `data/raw.csv` | Observaciones del ciclo, incluidos detalles incompletos. |
+| `combiner.py` / `data/combiner.json` | Altas, cambios, conservación y depuración. |
+| `clasificador.py` / `data/clasificador.json` | Análisis nuevos, reutilizados, errores y uso de tokens. |
+| `data/maestro.csv` | CSV compartido por combiner y clasificador. |
+| `data/control.sqlite3` | Checkpoints de extracción, caché de IA y registro de retirados. |
+| `data/pipeline.lock` | Bloqueo del sistema operativo para excluir escritores simultáneos. |
+| `data/bastion.log*` | Logs rotativos: hasta cuatro archivos de aproximadamente 2 MB. |
+
+Los scripts también se pueden ejecutar individualmente con `--config`. Esas ejecuciones
+manuales utilizan el mismo bloqueo; la ventana diaria la aplica `main.py`.
+Los códigos de salida son `0` para éxito o fuera de horario, `1` para trabajo pendiente
+o error y `75` cuando otra ejecución mantiene el bloqueo.
+
+## Integridad y recuperación
+
+- Scout conserva cada respuesta de detalle en disco antes de continuar. Al reintentar
+  un ciclo no vuelve a solicitar los detalles completos que ya obtuvo.
+- Los errores y las fechas desconocidas interrumpen la secuencia de vencidos; no se
+  convierten en un final exitoso. Los detalles incompletos también se conservan.
+- Los detalles fallidos se vuelven a intentar en ciclos posteriores, aunque queden
+  detrás del corte temprano. Los procesos conocidos del maestro que no aparecieron
+  antes del corte también se consultan, para detectar prórrogas.
+  La búsqueda nueva tiene prioridad sobre el backlog de enlaces antiguos fallidos.
+- Si un ciclo anterior quedó sin combinar, se recupera su journal y se consolida antes
+  de reemplazar el raw con el ciclo nuevo.
+- No se elimina un proceso por faltar en el raw de una extracción parcial.
+- Las escrituras públicas se realizan en un temporal del mismo directorio y se
+  publican mediante reemplazo atómico. Un error de CSV conserva el maestro anterior.
+- Cada respuesta de IA validada se confirma en la caché antes de publicar el CSV.
+  Una interrupción durante la escritura permite reutilizarla sin otra llamada de IA.
+- Un timeout de la API puede haber consumido tokens sin devolver respuesta. No se
+  reintenta inmediatamente esa solicitud; se deja pendiente. No se puede garantizar
+  evitar ese coste si el servidor procesó una solicitud cuya respuesta se perdió.
+
+Conserva `control.sqlite3` al mover el proyecto o hacer copias de seguridad. Borrarlo
+elimina checkpoints, caché y protección contra el reingreso de versiones retiradas.
+El historial exitoso de extracción se depura después de siete días; los pendientes
+se conservan hasta recuperarse. La caché y el registro de retirados crecen en disco,
+sin cargarse completos en memoria.
+
+## Fechas, identidad y retención
+
+La vigencia se compara **por día**. Si hoy es 15, solo el 14 y las fechas anteriores
+cuentan como vencidas. El recorrido se detiene con diez vencidos consecutivos.
+Una fecha de hoy se conserva aunque su hora ya haya pasado; Bastion filtra por hora.
+
+Ese corte es una heurística acordada: no demuestra que el sitio no tenga procesos
+vigentes desconocidos después del punto de corte. La revisión adicional protege los
+procesos ya conocidos y los detalles pendientes; no garantiza cobertura de registros
+desconocidos ocultos más abajo en el listado.
+
+`proceso_id` se obtiene del enlace de detalle normalizado. `contenido_hash` usa la fecha
+de recepción completa, incluida su hora, y la descripción normalizada. La descripción
+incluye las columnas extraídas de los renglones para conservar cantidades y referencias.
+El texto no se recorta. Un hash igual conserva la clasificación; un hash distinto la
+deja pendiente. Cambiar la skill o el modelo no invalida un análisis ya hecho.
+
+El maestro retira los vencidos por día y los registros con **30 días desde la primera
+detección**. Volver a observarlos no reinicia el plazo. Una versión retirada no reingresa
+sin cambios. Si cambia su hash, puede reingresar con una nueva ventana de retención.
+Una versión que vuelve a un hash previamente analizado recupera el resultado en caché.
+
+## Entrega a Bastion
+
+La lógica de recepción e incorporación pertenece al backend. Este proyecto no sube
+archivos ni llama al backend.
+
+`main.json` contiene `output_ready: true` únicamente cuando las tres etapas terminaron
+exitosamente. Incluye `run_id`, `maestro_sha256` y el total de filas. Para consumir una
+versión consistente, el receptor puede comprobar que el SHA-256 del CSV coincide con
+ese manifiesto. Las columnas `items` e `items_fuente` contienen JSON dentro de celdas
+CSV correctamente escapadas; la codificación del archivo es UTF-8 con BOM.
+
+## Carga y ritmo de consulta
+
+Se usa una sola sesión HTTP y no hay consultas paralelas. Por defecto hay una pausa
+mínima de un segundo después de cada respuesta, ajustada hasta cuatro segundos según
+la latencia. Los errores aumentan la pausa y aplican retroceso exponencial; también se
+respeta `Retry-After`. Tres fallos de detalle consecutivos abren el circuito y dejan
+el trabajo para la próxima invocación horaria.
+
+Los timeouts de conexión y lectura son 10 y 90 segundos. No hay un límite de 600
+procesos: ese número es la carga esperada, no un motivo para detenerse. El límite de
+16 MB por respuesta HTTP es configurable; excederlo genera un error visible.
+
+El procesamiento usa una página HTML o fila a la vez y tablas de trabajo en disco.
+No requiere navegador, pandas, modelos locales ni cargar el maestro completo en RAM.
+
+## Verificaciones
+
+```bash
+.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python tests/benchmark.py
+```
+
+El benchmark procesa 600 procesos de 20 items cada uno, sin consultar HonduCompras ni
+consumir API. Informa memoria máxima y comprueba que una segunda pasada no repita análisis.
+No representa el tiempo real del sitio ni una medición en el servidor de producción.
+
+Para una prueba manual breve contra el sitio, que no genera raw ni usa IA:
+
+```bash
+.venv/bin/python tools/check_site.py --config config.json --second-page
+```
+
+Esa prueba realiza un GET inicial, la búsqueda filtrada, un detalle y, con la opción
+indicada, una segunda página, manteniendo las mismas pausas del extractor.

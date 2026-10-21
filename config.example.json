@@ -1,0 +1,35 @@
+{
+  "data_dir": "data",
+  "start_hour": 19,
+  "end_hour": 13,
+  "retention_days": 30,
+  "scout": {
+    "search_url": "http://sicc.honducompras.gob.hn/HC/Procesos/BusquedaHistorico.aspx",
+    "modalidad": "2",
+    "tipo": "1",
+    "expired_streak": 10,
+    "connect_timeout": 10,
+    "read_timeout": 90,
+    "request_attempts": 3,
+    "min_interval_seconds": 1.0,
+    "max_interval_seconds": 4.0,
+    "backoff_seconds": 5,
+    "consecutive_failures_limit": 3,
+    "max_response_mb": 16
+  },
+  "ai": {
+    "provider": "openai",
+    "model": "gpt-6-luna",
+    "api_key_env": "BASTION_AI_API_KEY",
+    "endpoint": "https://api.openai.com/v1/responses",
+    "skill_path": null,
+    "reference_paths": [],
+    "context_paths": [],
+    "timeout_seconds": 120,
+    "request_attempts": 2,
+    "max_output_tokens": 6000,
+    "reasoning_effort": "low",
+    "max_context_bytes": 131072,
+    "min_interval_seconds": 1.0
+  }
+}
