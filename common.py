@@ -22,10 +22,11 @@ HN = timezone(timedelta(hours=-6), "America/Tegucigalpa")
 RAW_FIELDS = ["run_id", "proceso_id", "url", "entidad", "expediente",
               "fecha_recepcion", "fecha_recepcion_original", "descripcion",
               "items_fuente", "extraido_en", "extraccion_estado"]
-ANALYSIS_FIELDS = ["puntaje", "rubro", "resumen_corto", "items", "hash_analizado",
+ANALYSIS_FIELDS = ["puntaje", "rubro", "resumen", "items", "hash_analizado",
                    "analisis_estado", "analizado_en", "analisis_modelo", "analisis_error"]
 MASTER_FIELDS = RAW_FIELDS + ["contenido_hash", "primera_deteccion", "ultima_deteccion",
                              "ultima_modificacion"] + ANALYSIS_FIELDS
+LEGACY_MASTER_FIELDS = ["resumen_corto" if k == "resumen" else k for k in MASTER_FIELDS]
 
 
 def now():
@@ -120,17 +121,34 @@ def read_json(path, default=None):
         return default
 
 
+def numbered_items(items):
+    return "\n".join(f"{index}. {normalize(item)}" for index, item in enumerate(items, 1))
+
+
+def current_master_schema(path):
+    with Path(path).open(encoding="utf-8-sig", newline="") as f:
+        return next(csv.reader(f), None) == MASTER_FIELDS
+
+
 def rows(path, expected=None):
     csv.field_size_limit(32 * 1024 * 1024)
     with Path(path).open(encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
         if reader.fieldnames is None:
             raise ValueError(f"CSV sin encabezado: {path}")
-        if expected is not None and reader.fieldnames != expected:
+        legacy = expected == MASTER_FIELDS and reader.fieldnames == LEGACY_MASTER_FIELDS
+        if expected is not None and reader.fieldnames != expected and not legacy:
             raise ValueError(f"Columnas inesperadas en {path}")
         for row in reader:
             if None in row or any(value is None for value in row.values()):
                 raise ValueError(f"Fila CSV incompleta o mal formada en {path}")
+            if legacy:
+                row["resumen"] = row.pop("resumen_corto")
+                if row.get("items"):
+                    items = json.loads(row["items"])
+                    if not isinstance(items, list) or any(not isinstance(item, str) for item in items):
+                        raise ValueError("Items del maestro anterior inválidos")
+                    row["items"] = numbered_items(items)
             yield row
 
 

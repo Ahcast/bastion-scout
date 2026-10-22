@@ -68,7 +68,7 @@ class FakeAI:
 
     def classify(self, row):
         self.calls.append(row["proceso_id"])
-        return {"puntaje": 85, "rubro": "Herramientas", "resumen_corto": "Taladro industrial",
+        return {"puntaje": 85, "rubro": "Herramientas", "resumen": "Taladro industrial",
                 "items": [row["descripcion"]]}
 
 
@@ -221,6 +221,92 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(retry["reused"], 1)
         self.assertEqual(len(ai.calls), 1)
 
+    def test_items_are_numbered_multiline_and_original_data_is_preserved(self):
+        original = detail(1, description='6 contactores, modelo "ABB-001"\n18 fusibles 25 A')
+        self.source([original])
+        combiner.run(self.cfg)
+
+        class ItemsAI:
+            def classify(self, row):
+                return {"puntaje": 90, "rubro": "Automatización y control industrial",
+                        "resumen": "Suministro de contactores y fusibles para un sistema de control industrial.",
+                        "items": ['6 contactores, modelo "ABB-001"', "18 fusibles, 25 A"]}
+
+        self.assertEqual(clasificador.run(self.cfg, client=ItemsAI())["status"], "exitoso")
+        row = self.master()[0]
+        self.assertEqual(row["items"], '1. 6 contactores, modelo "ABB-001"\n2. 18 fusibles, 25 A')
+        for key in common.RAW_FIELDS:
+            self.assertEqual(row[key], original[key], key)
+
+    def test_legacy_master_is_migrated_without_another_ai_call(self):
+        self.source([detail(1)])
+        combiner.run(self.cfg)
+        clasificador.run(self.cfg, client=FakeAI())
+        row = self.master()[0]
+        row["resumen_corto"] = row.pop("resumen")
+        row["items"] = json.dumps(["6 contactores", "18 fusibles"])
+        path = common.data_path(self.cfg, "maestro.csv")
+        common.write_csv(path, common.LEGACY_MASTER_FIELDS, [row])
+        self.assertFalse(common.current_master_schema(path))
+        ai = FakeAI()
+        result = clasificador.run(self.cfg, client=ai)
+        self.assertEqual(result["unchanged"], 1)
+        self.assertEqual(ai.calls, [])
+        self.assertTrue(common.current_master_schema(path))
+        self.assertEqual(self.master()[0]["items"], "1. 6 contactores\n2. 18 fusibles")
+        self.assertEqual(self.master()[0]["resumen"], row["resumen_corto"])
+
+    def test_legacy_cached_result_is_reused_without_another_ai_call(self):
+        self.source([detail(1)])
+        combiner.run(self.cfg)
+        row = self.master()[0]
+        legacy = {"puntaje": 85, "rubro": "Herramientas", "resumen_corto": "Compra de taladros industriales.",
+                  "items": ["2 taladros industriales"]}
+        with common.database(self.cfg) as db:
+            db.execute("INSERT INTO analysis VALUES (?,?,?,?,?)", (row["proceso_id"], row["contenido_hash"],
+                       json.dumps(legacy), FIXED.isoformat(), "old-model"))
+            db.commit()
+        ai = FakeAI()
+        result = clasificador.run(self.cfg, client=ai)
+        self.assertEqual(result["reused"], 1)
+        self.assertEqual(ai.calls, [])
+        self.assertEqual(self.master()[0]["resumen"], legacy["resumen_corto"])
+        self.assertEqual(self.master()[0]["items"], "1. 2 taladros industriales")
+
+    def test_main_migrates_completed_legacy_master_without_scanning_or_spending_tokens(self):
+        self.source([detail(1)])
+        combiner.run(self.cfg)
+        clasificador.run(self.cfg, client=FakeAI())
+        row = self.master()[0]
+        row["resumen_corto"] = row.pop("resumen")
+        row["items"] = json.dumps(["Taladro industrial"])
+        path = common.data_path(self.cfg, "maestro.csv")
+        common.write_csv(path, common.LEGACY_MASTER_FIELDS, [row])
+        ai = FakeAI()
+        original = clasificador.run
+        with patch.object(main.scout, "run") as scanner:
+            with patch.object(main.clasificador, "run", side_effect=lambda cfg, rid, dl: original(cfg, rid, dl, client=ai)):
+                result = main.run(self.cfg)
+        self.assertTrue(result["output_ready"])
+        self.assertFalse(scanner.called)
+        self.assertEqual(ai.calls, [])
+        self.assertTrue(common.current_master_schema(path))
+
+    def test_indeterminable_object_keeps_row_and_empty_items(self):
+        self.source([detail(1, description="Ninguna")])
+        combiner.run(self.cfg)
+
+        class UnknownAI:
+            def classify(self, row):
+                return {"puntaje": 42, "rubro": "Categoría de prueba",
+                        "resumen": "Resultado sintético para comprobar una lista de items vacía.", "items": []}
+
+        result = clasificador.run(self.cfg, client=UnknownAI())
+        self.assertEqual(result["status"], "exitoso")
+        self.assertEqual(len(self.master()), 1)
+        self.assertEqual(self.master()[0]["puntaje"], "42")
+        self.assertEqual(self.master()[0]["items"], "")
+
     def test_retention_tombstone_prevents_reentry_and_new_hash_can_return(self):
         old = detail(1, FIXED.date() + timedelta(days=20))
         old["extraido_en"] = (FIXED - timedelta(days=31)).isoformat()
@@ -319,9 +405,24 @@ class PipelineTests(unittest.TestCase):
 
 
 class ParsingTests(unittest.TestCase):
+    def test_private_skill_loads_only_explicit_references(self):
+        with tempfile.TemporaryDirectory(dir=common.ROOT / "tests") as directory:
+            root = Path(directory)
+            (root / "skill.md").write_text("Instrucciones sintéticas de prueba.", encoding="utf-8")
+            (root / "referencia.md").write_text("Referencia sintética seleccionada.", encoding="utf-8")
+            (root / "calibracion.md").write_text("EJEMPLO_NO_INCLUIR", encoding="utf-8")
+            cfg = config(root)
+            cfg["ai"]["skill_path"] = "skill.md"
+            cfg["ai"]["reference_paths"] = ["referencia.md"]
+            instructions = clasificador.load_instructions(cfg)
+            self.assertIn("Instrucciones sintéticas de prueba.", instructions)
+            self.assertIn("Referencia sintética seleccionada.", instructions)
+            self.assertNotIn("EJEMPLO_NO_INCLUIR", instructions)
+            self.assertLess(len(instructions.encode("utf-8")), cfg["ai"]["max_context_bytes"])
+
     def test_openai_schema_and_response_without_network(self):
         cfg = config(Path("."))
-        result = {"puntaje": 80, "rubro": "Instrumentos", "resumen_corto": "Compra de equipo", "items": ["Equipo ABC"]}
+        result = {"puntaje": 80, "rubro": "Instrumentos", "resumen": "Compra de equipo", "items": ["Equipo ABC"]}
         response = MagicMock()
         response.__enter__.return_value = response
         response.status_code = 200
@@ -386,9 +487,9 @@ class ParsingTests(unittest.TestCase):
 
     def test_schema_rejects_bool_score_and_nonstring_items(self):
         with self.assertRaises(ValueError):
-            clasificador.validate_result({"puntaje": True, "rubro": "A", "resumen_corto": "B", "items": ["C"]})
+            clasificador.validate_result({"puntaje": True, "rubro": "A", "resumen": "B", "items": ["C"]})
         with self.assertRaises(ValueError):
-            clasificador.validate_result({"puntaje": 80, "rubro": "A", "resumen_corto": "B", "items": [1]})
+            clasificador.validate_result({"puntaje": 80, "rubro": "A", "resumen": "B", "items": [1]})
 
 
 if __name__ == "__main__":

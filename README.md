@@ -44,13 +44,29 @@ El proceso debe recibir `BASTION_AI_API_KEY` mediante el entorno del servicio o 
 La configuración no contiene la clave; tampoco se imprime ni se registra en los logs.
 El programa no carga archivos `.env` automáticamente.
 
-## Clasificación pendiente de la nueva skill
+## Configurar una skill privada
 
-La extracción y combinación ya funcionan sin configurar IA. Para habilitar el análisis:
+Los archivos de la skill, sus criterios y referencias se mantienen fuera del
+repositorio público. Las carpetas `private/` y `skills/` están excluidas de Git.
+Para habilitar el análisis:
 
-1. Coloca la nueva skill en el servidor y configura `ai.skill_path`.
-2. Añade sus referencias necesarias a `ai.reference_paths`; no se resuelven enlaces
-   Markdown automáticamente ni se envían instrucciones de exportación a Excel.
+1. Copia `config.example.json` a `config.json` si es una instalación nueva.
+2. Coloca la skill y sus referencias directamente en una carpeta privada del servidor,
+   accesible al usuario que ejecuta cron. Configura `ai.skill_path` con el archivo de
+   instrucciones para la API y `ai.reference_paths` con sus referencias necesarias.
+   Se aceptan rutas absolutas o relativas a `config.json`.
+   Por ejemplo, dentro del bloque `ai`:
+
+   ```json
+   "skill_path": "/etc/bastion-scout/rfq-clasificacion/api-instructions.md",
+   "reference_paths": [
+     "/etc/bastion-scout/rfq-clasificacion/references/criterios.md",
+     "/etc/bastion-scout/rfq-clasificacion/references/rubros.md"
+   ]
+   ```
+
+   No se resuelven enlaces Markdown automáticamente. Los ejemplos de calibración
+   pueden mantenerse aparte para revisión, sin repetirlos en cada solicitud.
 3. Configura opcionalmente `ai.context_paths` con contexto seleccionado. No cargues
    catálogos completos: el límite predeterminado de instrucciones más contexto es
    128 KiB. Si se supera, se informa el error y no se trunca silenciosamente.
@@ -61,10 +77,18 @@ La integración sigue la [documentación del modelo](https://developers.openai.c
 y la de [salidas estructuradas](https://developers.openai.com/api/docs/guides/structured-outputs?api-mode=responses).
 No se ha efectuado ninguna llamada de pago durante el desarrollo.
 
-Los cuatro campos devueltos son `puntaje` (entero 0–100), `rubro`, `resumen_corto`
-e `items` (lista de textos con cantidades y referencias cuando consten).
-Sin la skill o la clave, el maestro se conserva y la clasificación queda pendiente.
-Las reglas de puntuación nunca eliminan filas del maestro.
+La API devuelve solo `puntaje` (entero 0–100), `rubro`, `resumen` e `items` (array de
+textos), sin repetir los datos de entrada. Python escribe `items` como una celda CSV
+de texto con numeración y saltos de línea reales, no como JSON. El tratamiento del
+contenido y la puntuación se definen exclusivamente en la skill privada.
+
+Si la skill original describe otro formato de respuesta, utiliza una adaptación
+privada que conserve sus criterios y pida únicamente los cuatro campos JSON. El
+clasificador conserva los procesos independientemente de su rubro o puntaje.
+
+Sin la skill o la clave, el maestro se conserva y la clasificación queda pendiente. Los maestros
+anteriores con `resumen_corto` y listas JSON se convierten a `resumen` e items numerados
+sin analizar otra vez. También se reutilizan las respuestas antiguas de la caché.
 
 ## Archivos y responsabilidades
 
@@ -142,8 +166,9 @@ archivos ni llama al backend.
 `main.json` contiene `output_ready: true` únicamente cuando las tres etapas terminaron
 exitosamente. Incluye `run_id`, `maestro_sha256` y el total de filas. Para consumir una
 versión consistente, el receptor puede comprobar que el SHA-256 del CSV coincide con
-ese manifiesto. Las columnas `items` e `items_fuente` contienen JSON dentro de celdas
-CSV correctamente escapadas; la codificación del archivo es UTF-8 con BOM.
+ese manifiesto. `items` contiene texto numerado con un item por línea en una celda
+CSV entrecomillada. `items_fuente` conserva el JSON de los renglones extraídos.
+La codificación del archivo es UTF-8 con BOM.
 
 ## Carga y ritmo de consulta
 

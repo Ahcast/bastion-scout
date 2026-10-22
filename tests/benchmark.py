@@ -47,7 +47,7 @@ class LocalAI:
 
     def classify(self, row):
         self.calls += 1
-        return {"puntaje": 80, "rubro": "Instrumentación", "resumen_corto": "Compra de instrumentos",
+        return {"puntaje": 80, "rubro": "Instrumentación", "resumen": "Compra de instrumentos",
                 "items": [f"Item {i}: instrumento modelo ABC-{i}, cantidad 20" for i in range(20)]}
 
 

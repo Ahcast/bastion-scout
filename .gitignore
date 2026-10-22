@@ -7,3 +7,5 @@ config.json
 !.env.example
 *.pem
 *.key
+/private/
+/skills/

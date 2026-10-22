@@ -8,7 +8,7 @@ import logging
 import clasificador
 import combiner
 import scout
-from common import (BusyError, check_deadline, configure_logging, data_path,
+from common import (BusyError, check_deadline, configure_logging, current_master_schema, data_path,
                     file_hash, finish, load_config, now, pipeline_lock, read_json,
                     started, write_json)
 
@@ -77,7 +77,7 @@ def run(cfg):
 
         combined = recorded(cfg, "combiner", run_id)
         master = data_path(cfg, "maestro.csv")
-        if not (combined.get("status") == "exitoso" and master.exists()
+        if not (combined.get("status") == "exitoso" and master.exists() and current_master_schema(master)
                 and combined.get("raw_sha256") == scan.get("raw_sha256")):
             # Local merge is allowed at cutoff: save every observation already collected.
             combined = combiner.run(cfg, run_id)

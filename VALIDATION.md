@@ -1,11 +1,13 @@
 # Validación de desarrollo — 21 de octubre de 2026
 
-- 25 pruebas locales aprobadas: fechas por día, corte de diez vencidos, errores de
+- 31 pruebas locales aprobadas: fechas por día, corte de diez vencidos, errores de
   detalle, paginación repetida, acumulación parcial, recuperación entre ciclos,
   retención, bloqueo de escritores, validación de CSV, caché y contrato de Responses API.
+  Incluyen carga de archivos privados sintéticos, items numerados, preservación del detalle original y
+  migración de CSV y caché anteriores sin otra llamada de IA.
 - Prueba de carga sin red: 600 procesos, 20 items por proceso. Pico de memoria del
-  proceso: **49,86 MB** en Windows/Python 3.12; pico de asignaciones Python: 3,00 MB.
-  Duración: 19,55 segundos, sin esperas HTTP ni llamadas reales de IA.
+  proceso: **49,59 MB** en Windows/Python 3.12; pico de asignaciones Python: 3,00 MB.
+  Duración: 19,67 segundos, sin esperas HTTP ni llamadas reales de IA.
 - Segunda pasada del clasificador: cero llamadas simuladas adicionales.
 - `main.py --check` y compilación de los módulos aprobados.
 - Consulta inicial real al formulario: HTTP 200. Una prueba breve posterior avanzó
@@ -16,5 +18,7 @@
   un cron ni se modificó el crawler anterior.
 
 La memoria medida corresponde a una simulación concreta, no al servidor de producción
-ni a todas las posibles respuestas HTML. Falta incorporar la nueva skill del usuario
-y configurar la clave de API para validar la clasificación real.
+ni a todas las posibles respuestas HTML. El clasificador admite una skill privada,
+JSON interno y CSV final con `resumen` e items numerados. El repositorio no contiene
+la skill ni sus criterios. Falta instalar esos archivos y la clave de API en el
+servidor para validar la clasificación real; las pruebas no miden calidad comercial.
