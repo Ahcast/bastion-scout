@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 
-from common import (ANALYSIS_FIELDS, MASTER_FIELDS, RAW_FIELDS, cli, content_hash,
+from common import (ANALYSIS_FIELDS, MASTER_FIELDS, RAW_FIELDS, cli, content_hash, detail_complete,
                     data_path, database, file_hash, finish, now, parse_date,
                     read_json, rows, stamp, started, write_csv, write_json)
 
@@ -72,6 +72,9 @@ def run(cfg, run_id=None, deadline=None):
                     row.update(old)
                 # Incomplete observations must never erase previously extracted data.
                 for key in RAW_FIELDS:
+                    if (old and detail_complete(old) and not detail_complete(incoming)
+                            and key in {"descripcion", "items_fuente"}):
+                        continue
                     if incoming.get(key) or not old:
                         row[key] = incoming.get(key, "")
                 h = content_hash(row)

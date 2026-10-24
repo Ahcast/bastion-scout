@@ -83,6 +83,27 @@ def content_hash(row):
                    normalize(row.get("descripcion"))])
 
 
+GENERIC_DESCRIPTIONS = {
+    "compra menor", "licitacion publica", "licitacion privada", "contratacion directa",
+    "suministro de bienes y/o servicios", "suministro de bienes y servicios",
+    "sin descripcion", "no aplica", "n/a", "ninguna", "ninguno", "descripcion",
+    "especificaciones", "no existen registros", "no hay registros", "sin productos",
+}
+
+
+def useful_description(value):
+    return any(plain(line).strip(" .:-") not in GENERIC_DESCRIPTIONS
+               and any(char.isalpha() for char in line)
+               for line in (value or "").splitlines() if normalize(line))
+
+
+def detail_complete(row):
+    return bool(row.get("extraccion_estado") == "completo"
+                and all(normalize(row.get(k)) for k in ("entidad", "expediente"))
+                and parse_date(row.get("fecha_recepcion"))
+                and useful_description(row.get("descripcion")))
+
+
 def file_hash(path):
     h = hashlib.sha256()
     with Path(path).open("rb") as f:
@@ -178,6 +199,14 @@ def load_config(path=None):
         raise ValueError("Confirma modalidad y tipo en config.json; una cadena vacía incluye todos.")
     if s.get("request_attempts", 3) < 1 or s.get("expired_streak", 10) < 1:
         raise ValueError("request_attempts y expired_streak deben ser positivos")
+    for key in ("invocation_budget_seconds", "discovery_budget_seconds", "detail_retry_max_seconds",
+                "cooldown_max_seconds", "audit_every_days"):
+        if key in s and s[key] <= 0:
+            raise ValueError(key + " debe ser positivo")
+    for key in ("historical_budget_seconds", "historical_attempts_per_invocation", "detail_retry_seconds",
+                "cooldown_seconds", "session_rebuilds_per_invocation", "audit_pages"):
+        if key in s and s[key] < 0:
+            raise ValueError(key + " no puede ser negativo")
     if cfg.get("retention_days", 30) < 1:
         raise ValueError("retention_days debe ser positivo")
     Path(cfg["_data"]).mkdir(parents=True, exist_ok=True)
@@ -257,6 +286,19 @@ def database(cfg):
         CREATE TABLE IF NOT EXISTS scan (
             run_id TEXT NOT NULL, url TEXT NOT NULL, outcome TEXT NOT NULL,
             data TEXT, PRIMARY KEY (run_id, url));
+        CREATE TABLE IF NOT EXISTS scout_round (
+            run_id TEXT PRIMARY KEY, scope TEXT NOT NULL, data TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS scout_page (
+            run_id TEXT NOT NULL, page INTEGER NOT NULL, generation INTEGER NOT NULL,
+            signature TEXT NOT NULL, links TEXT NOT NULL, has_next INTEGER NOT NULL, dates TEXT NOT NULL,
+            processed_at TEXT NOT NULL, PRIMARY KEY (run_id,page));
+        CREATE TABLE IF NOT EXISTS scout_queue (
+            run_id TEXT NOT NULL, url TEXT NOT NULL, state TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0, next_retry TEXT, last_error TEXT,
+            source TEXT NOT NULL, discovered_at TEXT NOT NULL, first_page INTEGER NOT NULL DEFAULT 0,
+            position INTEGER NOT NULL DEFAULT 0, resolved INTEGER NOT NULL DEFAULT 0,
+            products_state TEXT, PRIMARY KEY (run_id,url));
+        CREATE INDEX IF NOT EXISTS scout_queue_due ON scout_queue(run_id,resolved,next_retry);
     """)
     db.commit()
     try:
@@ -289,7 +331,7 @@ def daily_counts(cfg, day=None):
         "fecha_honduras": day,
         "procesos_extraidos": len(extracted),
         "detalles_completos": len(complete),
-        "detalles_incompletos": len(incomplete),
+        "detalles_incompletos": len(incomplete - complete),
         "procesos_analizados": len(analyzed),
     }
 

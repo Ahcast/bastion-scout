@@ -1,5 +1,8 @@
 # Validación de desarrollo — 21 de octubre de 2026
 
+La revisión posterior del 24 de octubre (47 pruebas y carga con el motor nuevo) está
+registrada en [INCIDENT-2026-10-24.md](INCIDENT-2026-10-24.md).
+
 - 31 pruebas locales aprobadas: fechas por día, corte de diez vencidos, errores de
   detalle, paginación repetida, acumulación parcial, recuperación entre ciclos,
   retención, bloqueo de escritores, validación de CSV, caché y contrato de Responses API.

@@ -8,12 +8,13 @@ from pathlib import Path
 
 import requests
 
-from common import (MASTER_FIELDS, DeadlineReached, check_deadline, cli, content_hash,
+from common import (MASTER_FIELDS, DeadlineReached, check_deadline, cli, content_hash, detail_complete,
                     data_path, database, digest, file_hash, finish, normalize, now, numbered_items,
                     parse_date, pause, read_json, rows, stamp, started, write_csv,
                     write_json)
 
 LOG = logging.getLogger("bastion")
+VERSION = 2
 SCHEMA = {
     "type": "object", "additionalProperties": False,
     "properties": {
@@ -156,7 +157,8 @@ def run(cfg, run_id=None, deadline=None, client=None):
     combination = read_json(data_path(cfg, "combiner.json"), {})
     run_id = run_id or combination.get("run_id") or now().date().isoformat()
     state = started("clasificador", run_id)
-    state.update(analyzed=0, reused=0, unchanged=0, pending=0, errors=0, total=0)
+    state.update(classifier_version=VERSION, analyzed=0, reused=0, unchanged=0, pending=0, errors=0, total=0,
+                 current_errors=0, current_pending=0, pendientes_historicos=[])
     write_json(data_path(cfg, "clasificador.json"), state)
     owned_client = client is None
     stopped = None
@@ -170,6 +172,18 @@ def run(cfg, run_id=None, deadline=None, client=None):
                     state["total"] += 1
                     if not row.get("proceso_id") or row.get("contenido_hash") != content_hash(row):
                         raise ValueError("Fila del maestro inconsistente; ejecutar combiner")
+                    queued = db.execute("SELECT source FROM scout_queue WHERE run_id=? AND url=?",
+                                        (run_id, row.get("url"))).fetchone()
+                    current = queued["source"] != "historical" if queued else row.get("run_id") == run_id
+                    if not detail_complete(row):
+                        message = "Detalle incompleto: recuperar con scout antes de consumir tokens"
+                        row.update(extraccion_estado="incompleto", analisis_estado="error", analisis_error=message)
+                        state["errors"] += 1
+                        state["current_errors"] += int(current)
+                        if not current:
+                            state["pendientes_historicos"].append({"proceso_id": row["proceso_id"], "error": message})
+                        yield row
+                        continue
                     if row.get("hash_analizado") == row["contenido_hash"] and row.get("analisis_estado") == "analizado":
                         state["unchanged"] += 1
                         yield row
@@ -184,6 +198,9 @@ def run(cfg, run_id=None, deadline=None, client=None):
                     if stopped:
                         row.update(analisis_estado="pendiente", analisis_error=stopped)
                         state["pending"] += 1
+                        state["current_pending"] += int(current)
+                        if not current:
+                            state["pendientes_historicos"].append({"proceso_id": row["proceso_id"], "error": stopped})
                         yield row
                         continue
                     try:
@@ -192,6 +209,7 @@ def run(cfg, run_id=None, deadline=None, client=None):
                         stopped = "limite_horario"
                         row.update(analisis_estado="pendiente", analisis_error=stopped)
                         state["pending"] += 1
+                        state["current_pending"] += int(current)
                         yield row
                         continue
 
@@ -204,6 +222,7 @@ def run(cfg, run_id=None, deadline=None, client=None):
                     if local_error:
                         row.update(analisis_estado="error", analisis_error=local_error)
                         state["errors"] += 1
+                        state["current_errors"] += int(current)
                         LOG.warning("Clasificación pendiente %s: %s", row["proceso_id"], local_error)
                         yield row
                         continue
@@ -228,10 +247,14 @@ def run(cfg, run_id=None, deadline=None, client=None):
                         stopped = "limite_horario"
                         row.update(analisis_estado="pendiente", analisis_error=stopped)
                         state["pending"] += 1
+                        state["current_pending"] += int(current)
                     except Exception as exc:
                         message = str(exc)
                         row.update(analisis_estado="error", analisis_error=message)
                         state["errors"] += 1
+                        state["current_errors"] += int(current)
+                        if not current:
+                            state["pendientes_historicos"].append({"proceso_id": row["proceso_id"], "error": message})
                         LOG.warning("Clasificación pendiente %s: %s", row["proceso_id"], message)
                         if client is None or getattr(exc, "stop", False):
                             stopped = message
@@ -239,8 +262,9 @@ def run(cfg, run_id=None, deadline=None, client=None):
             write_csv(path, MASTER_FIELDS, classified_rows())
         if client:
             state["usage"] = getattr(client, "usage", {})
-        return finish(cfg, state, "exitoso" if not state["errors"] and not state["pending"] else "parcial",
-                      "analisis_completo" if not state["errors"] and not state["pending"] else "analisis_pendiente",
+        complete = not state["current_errors"] and not state["current_pending"]
+        return finish(cfg, state, "exitoso" if complete else "parcial",
+                      "analisis_actual_completo" if complete else "analisis_pendiente",
                       maestro_sha256=file_hash(path), stop_reason=stopped)
     except Exception as exc:
         LOG.exception("Clasificador falló; CSV anterior preservado y respuestas en caché")

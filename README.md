@@ -96,6 +96,7 @@ sin analizar otra vez. También se reutilizan las respuestas antiguas de la cach
 | --- | --- |
 | `main.py` / `data/main.json` | Horario, estado global, etapas pendientes y manifiesto de entrega. |
 | `scout.py` / `data/scout.json` | Extracción, páginas, corte, errores y detalles pendientes. |
+| `scout_engine.py` / `scout_store.py` | Fases independientes, cola durable y recuperación de paginación. |
 | `data/raw.csv` | Observaciones del ciclo, incluidos detalles incompletos. |
 | `combiner.py` / `data/combiner.json` | Altas, cambios, conservación y depuración. |
 | `clasificador.py` / `data/clasificador.json` | Análisis nuevos, reutilizados, errores y uso de tokens. |
@@ -111,14 +112,27 @@ o error y `75` cuando otra ejecución mantiene el bloqueo.
 
 ## Integridad y recuperación
 
-- Scout conserva cada respuesta de detalle en disco antes de continuar. Al reintentar
-  un ciclo no vuelve a solicitar los detalles completos que ya obtuvo.
-- Los errores y las fechas desconocidas interrumpen la secuencia de vencidos; no se
-  convierten en un final exitoso. Los detalles incompletos también se conservan.
-- Los detalles fallidos se vuelven a intentar en ciclos posteriores, aunque queden
-  detrás del corte temprano. Los procesos conocidos del maestro que no aparecieron
-  antes del corte también se consultan, para detectar prórrogas.
-  La búsqueda nueva tiene prioridad sobre el backlog de enlaces antiguos fallidos.
+- Primero descubre enlaces usando **Fecha Cierre del listado**, por día de Honduras.
+  Cada página y sus enlaces vigentes o de fecha desconocida se confirman juntos en
+  SQLite. Los vencidos quedan en el registro de página y no se descargan como detalles.
+  En el sitio, la celda «Perido de Vigencia» contiene inicio y cierre: se lee el cierre.
+- Después procesa la cola guardada. Un fallo de paginación permite continuar esa cola.
+  Cada respuesta de detalle se confirma antes de continuar. Al reintentar el ciclo no
+  vuelve a solicitar los detalles completos que ya obtuvo.
+- `scout_round` guarda la ronda y su avance; `scout_page` conserva páginas, fechas y
+  firmas; `scout_queue` guarda estado (`pendiente`, `completo`, `incompleto`, `error`),
+  intentos, error y próximo reintento. Se utiliza el mismo `control.sqlite3` existente.
+  No se guarda ViewState: cada recuperación crea una búsqueda con los mismos filtros
+  y un formulario reciente. Si cambió la primera página, se repite el prefijo con
+  deduplicación; si sigue igual, se solicita la página pendiente directamente.
+- «Compra Menor» y otros valores genéricos no validan una descripción. La grilla de
+  productos se registra como presente, vacía o ausente; una grilla ausente o un detalle
+  sin contenido útil queda incompleto. Los campos obligatorios siguen siendo necesarios.
+  La migración reabre los falsos completos antiguos sin borrar datos ni caché de IA.
+- Los procesos conocidos con fecha vigente se vuelven a comprobar aunque falle el
+  listado. Los demás pendientes heredados tienen un presupuesto de 60 segundos y dos
+  intentos por invocación. `ronda_actual_completa` y `pendientes_historicos` se informan
+  por separado; los heredados no impiden cerrar la ronda actual y permanecen visibles.
 - Si un ciclo anterior quedó sin combinar, se recupera su journal y se consolida antes
   de reemplazar el raw con el ciclo nuevo.
 - No se elimina un proceso por faltar en el raw de una extracción parcial.
@@ -139,13 +153,16 @@ sin cargarse completos en memoria.
 ## Fechas, identidad y retención
 
 La vigencia se compara **por día**. Si hoy es 15, solo el 14 y las fechas anteriores
-cuentan como vencidas. El recorrido se detiene con diez vencidos consecutivos.
+cuentan como vencidas. Diez vencidos consecutivos proponen un corte temprano.
 Una fecha de hoy se conserva aunque su hora ya haya pasado; Bastion filtra por hora.
 
-Ese corte es una heurística acordada: no demuestra que el sitio no tenga procesos
-vigentes desconocidos después del punto de corte. La revisión adicional protege los
-procesos ya conocidos y los detalles pendientes; no garantiza cobertura de registros
-desconocidos ocultos más abajo en el listado.
+Scout verifica el orden de las fechas de cierre a medida que descubre páginas.
+Una fecha desconocida o una inversión desactiva el corte temprano para esa ronda.
+Por defecto, todos los días audita tres páginas adicionales después del corte propuesto
+(`audit_every_days`, `audit_pages`). Un vigente posterior queda en la cola y se registra
+en `coverage.audit_omissions`; también desactiva el corte. La cobertura heurística se
+declara `heuristica_no_garantizada`, porque una auditoría finita no prueba que no haya
+otro vigente aún más abajo. `fin_resultados` indica que se llegó al final del listado.
 
 `proceso_id` se obtiene del enlace de detalle normalizado. `contenido_hash` usa la fecha
 de recepción completa, incluida su hora, y la descripción normalizada. La descripción
@@ -163,8 +180,10 @@ Una versión que vuelve a un hash previamente analizado recupera el resultado en
 La lógica de recepción e incorporación pertenece al backend. Este proyecto no sube
 archivos ni llama al backend.
 
-`main.json` contiene `output_ready: true` únicamente cuando las tres etapas terminaron
-exitosamente. Incluye `run_id`, `maestro_sha256` y el total de filas. Para consumir una
+`main.json` contiene `output_ready: true` cuando las tres etapas de la ronda actual
+terminaron exitosamente. Incluye pendientes históricos, cobertura, `run_id`,
+`maestro_sha256` y el total de filas. Los registros incompletos históricos conservan
+su estado en el CSV y no se envían a la IA. Para consumir una
 versión consistente, el receptor puede comprobar que el SHA-256 del CSV coincide con
 ese manifiesto. `items` contiene texto numerado con un item por línea en una celda
 CSV entrecomillada. `items_fuente` conserva el JSON de los renglones extraídos.
@@ -183,6 +202,12 @@ mínima de un segundo después de cada respuesta, ajustada hasta cuatro segundos
 la latencia. Los errores aumentan la pausa y aplican retroceso exponencial; también se
 respeta `Retry-After`. Tres fallos de detalle consecutivos abren el circuito y dejan
 el trabajo para la próxima invocación horaria.
+
+Las pausas de fase y los próximos reintentos de cada detalle se guardan en SQLite,
+con espera creciente. Cada invocación de Scout tiene 45 minutos por defecto; el
+descubrimiento usa como máximo 15 minutos y el 40 % del tiempo restante, dejando
+tiempo para la extracción. Estos presupuestos no descartan enlaces: se retoman
+desde sus checkpoints en otra invocación. `main.py` conserva el cierre de las 13:00.
 
 Los timeouts de conexión y lectura son 10 y 90 segundos. No hay un límite de 600
 procesos: ese número es la carga esperada, no un motivo para detenerse. El límite de

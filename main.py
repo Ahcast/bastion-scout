@@ -75,11 +75,14 @@ def run(cfg):
                 return finish_main(cfg, state, "error", "recuperacion_anterior_pendiente")
         scan = recorded(cfg, "scout", run_id)
         scope = {key: cfg["scout"][key] for key in ("modalidad", "tipo")}
-        if not (scan.get("status") == "exitoso" and scan.get("scope") == scope
+        if not (scan.get("status") == "exitoso" and scan.get("scanner_version") == scout.VERSION and scan.get("scope") == scope
                 and matching_file(cfg, "raw.csv", scan.get("raw_sha256"))):
             check_deadline(deadline)
             scan = scout.run(cfg, run_id, deadline)
         state["stages"]["scout"] = scan.get("status", "error")
+        state["ronda_actual_completa"] = scan.get("ronda_actual_completa", False)
+        state["pendientes_historicos"] = scan.get("pendientes_historicos", [])
+        state["coverage"] = scan.get("coverage", {})
         if scan.get("status") != "exitoso":
             state["retry_stages"].append("scout")
         write_json(data_path(cfg, "main.json"), state)
@@ -96,10 +99,11 @@ def run(cfg):
             return finish_main(cfg, state, "parcial", "combinacion_pendiente")
 
         classified = recorded(cfg, "clasificador", run_id)
-        if not (classified.get("status") == "exitoso"
+        if not (classified.get("status") == "exitoso" and classified.get("classifier_version") == clasificador.VERSION
                 and matching_file(cfg, "maestro.csv", classified.get("maestro_sha256"))):
             classified = clasificador.run(cfg, run_id, deadline)
         state["stages"]["clasificador"] = classified.get("status", "error")
+        state["historical_analysis_pending"] = classified.get("pendientes_historicos", [])
         if classified.get("status") != "exitoso":
             state["retry_stages"].append("clasificador")
         ready = not state["retry_stages"]

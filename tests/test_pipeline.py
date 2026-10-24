@@ -21,6 +21,7 @@ FIXED = datetime(2026, 10, 21, 20, tzinfo=common.HN)
 def config(directory):
     cfg = json.loads((common.ROOT / "config.example.json").read_text())
     cfg.update(_data=str(directory), _config_dir=str(directory))
+    cfg["scout"].update(detail_retry_seconds=0, cooldown_seconds=0)
     return cfg
 
 
@@ -45,12 +46,14 @@ class FakeSite:
         self.repeat = repeat
 
     def search(self):
-        return scout.Page(self.pages[0], {}, len(self.pages) > 1)
+        return scout.Page(self.pages[0], {}, len(self.pages) > 1,
+                          {url: self.details[url].get("fecha_recepcion", "") for url in self.pages[0]})
 
     def advance(self, page, number):
         if self.repeat:
             return self.search()
-        return scout.Page(self.pages[number - 1], {}, number < len(self.pages))
+        return scout.Page(self.pages[number - 1], {}, number < len(self.pages),
+                          {url: self.details[url].get("fecha_recepcion", "") for url in self.pages[number - 1]})
 
     def detail(self, url, run_id):
         self.calls.append(url)
@@ -89,7 +92,8 @@ class PipelineTests(unittest.TestCase):
         for row in values:
             row["run_id"] = run_id
         common.write_csv(common.data_path(self.cfg, "raw.csv"), common.RAW_FIELDS, values)
-        state = {"run_id": run_id, "status": status, "raw_sha256": common.file_hash(common.data_path(self.cfg, "raw.csv")),
+        state = {"run_id": run_id, "status": status, "scanner_version": scout.VERSION,
+                 "raw_sha256": common.file_hash(common.data_path(self.cfg, "raw.csv")),
                  "scope": {"modalidad": "2", "tipo": "1"}}
         common.write_json(common.data_path(self.cfg, "scout.json"), state)
         return state
@@ -108,9 +112,10 @@ class PipelineTests(unittest.TestCase):
         values = [detail(1)] + [detail(i, yesterday) for i in range(2, 12)] + [detail(12)]
         result, client = self.scan(values, [list(r["url"] for r in values[:6]), list(r["url"] for r in values[6:])])
         self.assertEqual(result["status"], "exitoso")
-        self.assertEqual(result["reason"], "10_vencidos_consecutivos")
-        self.assertEqual(result["extracted"], 1)
-        self.assertNotIn(values[-1]["url"], client.calls)
+        self.assertEqual(result["reason"], "fin_resultados_verificado")
+        self.assertEqual(result["extracted"], 2)
+        self.assertIn(values[-1]["url"], client.calls)
+        self.assertEqual(result["coverage"]["audit_omissions"], 1)
 
     def test_missing_description_preserved_and_marked_pending(self):
         row = detail(1, description="", complete=False)
@@ -169,7 +174,8 @@ class PipelineTests(unittest.TestCase):
         result = scout.run(self.cfg, "2026-10-21", client=site)
         self.assertEqual(site.calls[0], fresh["url"])
         self.assertEqual(result["extracted"], 1)
-        self.assertEqual(result["status"], "parcial")
+        self.assertEqual(result["status"], "exitoso")
+        self.assertTrue(result["pendientes_historicos"])
 
     def test_partial_raw_accumulates_without_removing_absent_processes(self):
         self.source([detail(1), detail(2)])
@@ -293,7 +299,7 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(common.current_master_schema(path))
 
     def test_indeterminable_object_keeps_row_and_empty_items(self):
-        self.source([detail(1, description="Ninguna")])
+        self.source([detail(1, description="Adquisición para necesidades institucionales sin especificaciones adjuntas")])
         combiner.run(self.cfg)
 
         class UnknownAI:
