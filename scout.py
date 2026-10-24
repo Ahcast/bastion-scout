@@ -19,7 +19,6 @@ from common import (RAW_FIELDS, DeadlineReached, check_deadline, cli, data_path,
 from scout_store import ScanStore
 
 TABLE = "ctl00_cphCuerpo_gvResultados"
-TARGET = "ctl00$cphCuerpo$gvResultados"
 LOG = logging.getLogger("bastion")
 VERSION = 2
 
@@ -64,6 +63,7 @@ class Page:
     form: dict
     has_next: bool
     closing_dates: dict = field(default_factory=dict)
+    pagination: list = field(default_factory=list)
 
 
 def parse_results(html, search_url, page_number):
@@ -103,12 +103,30 @@ def parse_results(html, search_url, page_number):
                                   "no se encontraron procesos", "no se han encontrado registros",
                                   "no existen registros", "sin resultados", "no hay registros")):
             raise ValueError("Tabla sin enlaces ni mensaje explícito de resultados vacíos")
-        arguments = []
+        pagination = []
         for a in table.find_all("a", href=True):
-            arguments.extend(re.findall(r"Page\$([A-Za-z]+|\d+)", a["href"]))
-        has_next = any((a.isdigit() and int(a) > page_number) or a.lower() in {"next", "last"}
-                       for a in arguments)
-        return Page(links, form_data(soup), has_next, closing_dates)
+            href = a.get("href", "")
+            onclick = a.get("onclick", "")
+            source = href + " " + onclick
+            postback = re.search(
+                r"__doPostBack\s*\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]+)['\"]",
+                source, re.I)
+            if postback:
+                target, argument = postback.groups()
+                match = re.fullmatch(r"Page\$([A-Za-z]+|\d+)", argument, re.I)
+                if match:
+                    token = match[1]
+                    pagination.append({"page": int(token) if token.isdigit() else token.lower(),
+                                       "target": target, "argument": argument, "href": href})
+                continue
+            match = re.search(r"Page\$([A-Za-z]+|\d+)", source, re.I)
+            if match:
+                token = match[1]
+                pagination.append({"page": int(token) if token.isdigit() else token.lower(),
+                                   "target": "", "argument": "Page$" + token, "href": href})
+        has_next = any((isinstance(action["page"], int) and action["page"] > page_number)
+                       or action["page"] in {"next", "last"} for action in pagination)
+        return Page(links, form_data(soup), has_next, closing_dates, pagination)
     finally:
         soup.decompose()
 
@@ -179,6 +197,8 @@ class HonduClient:
         self.interval = self.cfg.get("min_interval_seconds", 1.0)
         self.requests = 0
         self.retries = 0
+        self.last_status_code = None
+        self.last_retry_after_seconds = 0
 
     def close(self):
         self.session.close()
@@ -193,6 +213,8 @@ class HonduClient:
     def html(self, url, data=None, attempts=None):
         error = None
         attempts = attempts or self.cfg.get("request_attempts", 3)
+        self.last_status_code = None
+        self.last_retry_after_seconds = 0
         for attempt in range(attempts):
             check_deadline(self.deadline)
             pause(max(0, self.last_finished + self.interval - time.monotonic()), self.deadline)
@@ -209,9 +231,12 @@ class HonduClient:
                     if retry_after:
                         try:
                             wait = max(wait, float(retry_after))
+                            self.last_retry_after_seconds = max(0, float(retry_after))
                         except ValueError:
                             try:
-                                wait = max(wait, (parsedate_to_datetime(retry_after) - now()).total_seconds())
+                                self.last_retry_after_seconds = max(
+                                    0, (parsedate_to_datetime(retry_after) - now()).total_seconds())
+                                wait = max(wait, self.last_retry_after_seconds)
                             except (ValueError, TypeError):
                                 pass
                     response.raise_for_status()
@@ -239,6 +264,7 @@ class HonduClient:
                 error = exc
                 self.interval = self.cfg.get("max_interval_seconds", 4.0)
                 status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                self.last_status_code = status_code
                 LOG.warning("Solicitud fallida (%s, HTTP=%s), intento %s",
                             type(exc).__name__, status_code or "sin respuesta", attempt + 1)
                 if status_code and 400 <= status_code < 500 and status_code not in {408, 429}:
@@ -248,7 +274,9 @@ class HonduClient:
                     pause(wait, self.deadline)
             finally:
                 self.last_finished = time.monotonic()
-        raise RuntimeError(f"HonduCompras no respondió: {type(error).__name__}") from error
+        status_code = self.last_status_code
+        reason = f"HTTP {status_code}" if status_code else type(error).__name__
+        raise RuntimeError(f"HonduCompras no respondió: {reason}") from error
 
     def search(self):
         soup = BeautifulSoup(self.html(self.url), "html.parser")
@@ -264,7 +292,22 @@ class HonduClient:
     def advance(self, page, number):
         data = dict(page.form)
         data.pop("ctl00$cphCuerpo$wpParametros$btnBuscar", None)
-        data.update(__EVENTTARGET=TARGET, __EVENTARGUMENT=f"Page${number}")
+        action = next((item for item in page.pagination if item["page"] == number), None)
+        if action is None:
+            action = next((item for item in page.pagination
+                           if item["page"] == "next"), None)
+        if action is None:
+            # Some WebForms pagers expose only a target or a nonnumeric Last link.
+            action = next((item for item in page.pagination if item.get("target")), None)
+        if action is None:
+            raise RuntimeError(f"El formulario no contiene una acción de paginación para la página {number}")
+        target = action.get("target")
+        argument = action.get("argument")
+        if target and action["page"] not in {number, "next"}:
+            argument = f"Page${number}"
+        if not target:
+            raise RuntimeError(f"El enlace de paginación Page${number} no contiene un postback ASP.NET utilizable")
+        data.update(__EVENTTARGET=target, __EVENTARGUMENT=argument)
         # A failed postback may have consumed its form state: rebuild the search
         # instead of repeatedly posting the same stale ViewState.
         return parse_results(self.html(self.url, data, attempts=1), self.url, number)

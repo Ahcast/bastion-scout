@@ -1,6 +1,6 @@
 # Validación de desarrollo — 21 de octubre de 2026
 
-La revisión posterior del 24 de octubre (47 pruebas y carga con el motor nuevo) está
+La revisión del 24 de octubre (50 pruebas; la carga del motor nuevo está en el informe) está
 registrada en [INCIDENT-2026-10-24.md](INCIDENT-2026-10-24.md).
 
 - 31 pruebas locales aprobadas: fechas por día, corte de diez vencidos, errores de

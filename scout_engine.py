@@ -164,6 +164,14 @@ def run(cfg, run_id=None, deadline=None, client=None):
                         except Exception as exc:
                             if rebuilds >= settings.get("session_rebuilds_per_invocation", 1):
                                 raise
+                            status_code = getattr(client, "last_status_code", None)
+                            if status_code in {429, 500, 502, 503, 504}:
+                                retry_after = getattr(client, "last_retry_after_seconds", 0)
+                                delay = max(settings.get("page_retry_cooldown_seconds", 180), retry_after)
+                                delay = min(delay, settings.get("retry_after_max_seconds", 1800))
+                                s.LOG.warning("HTTP %s en paginación; espera %s segundos antes de reconstruir",
+                                              status_code, int(delay))
+                                s.pause(delay, discovery_deadline)
                             rebuilds += 1
                             progress["session_rebuilds"] += 1
                             s.LOG.warning("Reconstruyendo búsqueda en página %s tras %s", number, type(exc).__name__)

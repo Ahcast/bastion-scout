@@ -68,9 +68,12 @@ class ScanStore:
     def capture(self, page, number):
         """Commit EVERY URL and the page checkpoint together, before fetching details."""
         with self.db:
-            self.db.execute("INSERT OR REPLACE INTO scout_page VALUES (?,?,?,?,?,?,?,?)",
-                            (self.run_id, number, self.progress["generation"], digest(page.links),
-                             json.dumps(page.links), int(page.has_next), json.dumps(page.closing_dates), stamp()))
+            self.db.execute("""INSERT OR REPLACE INTO scout_page
+                (run_id,page,generation,signature,links,has_next,dates,processed_at,pagination)
+                VALUES (?,?,?,?,?,?,?,?,?)""",
+                (self.run_id, number, self.progress["generation"], digest(page.links),
+                 json.dumps(page.links), int(page.has_next), json.dumps(page.closing_dates), stamp(),
+                 json.dumps(page.pagination, ensure_ascii=False)))
             for position, url in enumerate(page.links):
                 closing = parse_date(page.closing_dates.get(url))
                 if closing is None or closing.date() >= c.now().date():

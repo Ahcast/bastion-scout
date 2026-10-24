@@ -123,8 +123,12 @@ o error y `75` cuando otra ejecución mantiene el bloqueo.
   firmas; `scout_queue` guarda estado (`pendiente`, `completo`, `incompleto`, `error`),
   intentos, error y próximo reintento. Se utiliza el mismo `control.sqlite3` existente.
   No se guarda ViewState: cada recuperación crea una búsqueda con los mismos filtros
-  y un formulario reciente. Si cambió la primera página, se repite el prefijo con
-  deduplicación; si sigue igual, se solicita la página pendiente directamente.
+  y un formulario reciente. También se conserva la acción real del paginador
+  (`__EVENTTARGET` y `Page$N`) junto al checkpoint. Tras un HTTP 500/502/503/504 o
+  429, espera al menos tres minutos —o el valor de `Retry-After`, hasta 30 minutos—
+  antes de reconstruir la búsqueda. Si cambió la primera página, se repite el prefijo
+  con deduplicación; si sigue igual, se solicita la página pendiente con el formulario
+  vigente.
 - «Compra Menor» y otros valores genéricos no validan una descripción. La grilla de
   productos se registra como presente, vacía o ausente; una grilla ausente o un detalle
   sin contenido útil queda incompleto. Los campos obligatorios siguen siendo necesarios.

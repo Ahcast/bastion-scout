@@ -291,7 +291,8 @@ def database(cfg):
         CREATE TABLE IF NOT EXISTS scout_page (
             run_id TEXT NOT NULL, page INTEGER NOT NULL, generation INTEGER NOT NULL,
             signature TEXT NOT NULL, links TEXT NOT NULL, has_next INTEGER NOT NULL, dates TEXT NOT NULL,
-            processed_at TEXT NOT NULL, PRIMARY KEY (run_id,page));
+            processed_at TEXT NOT NULL, pagination TEXT NOT NULL DEFAULT '[]',
+            PRIMARY KEY (run_id,page));
         CREATE TABLE IF NOT EXISTS scout_queue (
             run_id TEXT NOT NULL, url TEXT NOT NULL, state TEXT NOT NULL,
             attempts INTEGER NOT NULL DEFAULT 0, next_retry TEXT, last_error TEXT,
@@ -300,6 +301,9 @@ def database(cfg):
             products_state TEXT, PRIMARY KEY (run_id,url));
         CREATE INDEX IF NOT EXISTS scout_queue_due ON scout_queue(run_id,resolved,next_retry);
     """)
+    page_columns = {row[1] for row in db.execute("PRAGMA table_info(scout_page)")}
+    if "pagination" not in page_columns:
+        db.execute("ALTER TABLE scout_page ADD COLUMN pagination TEXT NOT NULL DEFAULT '[]'")
     db.commit()
     try:
         yield db

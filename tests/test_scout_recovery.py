@@ -49,6 +49,33 @@ class RecoveryTests(unittest.TestCase):
             journal = db.execute("SELECT data FROM scout_round").fetchone()[0]
             self.assertNotIn("VIEWSTATE", journal)
 
+    def test_http_500_waits_before_rebuilding_the_live_pager(self):
+        values = [f.detail(i) for i in range(1, 3)]
+
+        class Site(f.FakeSite):
+            last_status_code = None
+            last_retry_after_seconds = 0
+            failed = False
+
+            def advance(self, page, number):
+                if number == 2 and not self.failed:
+                    self.failed = True
+                    self.last_status_code = 500
+                    raise RuntimeError("HonduCompras no respondió: HTTP 500")
+                self.last_status_code = None
+                return super().advance(page, number)
+
+            def restart_search(self):
+                return self.search()
+
+        site = Site([[values[0]["url"]], [values[1]["url"]]],
+                    {row["url"]: row for row in values})
+        with patch.object(scout, "pause") as wait:
+            result = scout.run(self.cfg, "2026-10-21", client=site)
+        self.assertTrue(result["ronda_actual_completa"])
+        wait.assert_called_once()
+        self.assertEqual(wait.call_args.args[0], 180)
+
     def test_all_links_committed_before_first_detail_and_survive_process_death(self):
         values = [f.detail(i) for i in range(1, 4)]
 
@@ -92,6 +119,17 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(result["status"], "parcial")
         self.assertEqual(result["phases"]["extraction"]["pending"], 0)
         self.assertEqual(set(site.calls), {row["url"] for row in values})
+
+    def test_pagination_actions_are_persisted_with_the_page_checkpoint(self):
+        url = "http://example.test/Proceso.aspx?id=1"
+        action = {"page": 2, "target": "form$results", "argument": "Page$2",
+                  "href": "javascript:__doPostBack('form$results','Page$2')"}
+        with common.database(self.cfg) as db:
+            store = ScanStore(db, "2026-10-21", {"modalidad": "2", "tipo": "1"})
+            store.capture(scout.Page([url], {}, True, {url: "24/10/2026"}, [action]), 1)
+            saved = db.execute("SELECT pagination FROM scout_page WHERE run_id=? AND page=1",
+                               ("2026-10-21",)).fetchone()[0]
+        self.assertEqual(json.loads(saved), [action])
 
     def test_discovery_budget_expiry_leaves_time_to_drain_queue(self):
         values = [f.detail(i) for i in range(1, 3)]
@@ -219,6 +257,27 @@ class RecoveryTests(unittest.TestCase):
 
 
 class ListingParsingTests(unittest.TestCase):
+    def test_real_pager_postback_is_parsed_and_used_for_the_next_page(self):
+        html = '''<form><input type="hidden" name="__VIEWSTATE" value="fresh-viewstate">
+        <table id="ctl00_cphCuerpo_gvResultados"><tr><th>Proceso</th></tr>
+        <tr><td><a id="ctl02_hlGoTo" href="Proceso.aspx?id=1">Detalle</a></td></tr>
+        <tr><td><a href="javascript:__doPostBack('ctl00$cphCuerpo$realPager','Page$2')">2</a>
+        <a href="javascript:__doPostBack('ctl00$cphCuerpo$realPager','Page$Next')">Siguiente</a></td></tr>
+        </table></form>'''
+        page = scout.parse_results(html, "http://example.test/Busqueda.aspx", 1)
+        self.assertTrue(page.has_next)
+        self.assertEqual(page.pagination[0]["target"], "ctl00$cphCuerpo$realPager")
+        self.assertEqual(page.pagination[0]["argument"], "Page$2")
+
+        client = scout.HonduClient({"scout": {"search_url": "http://example.test/Busqueda.aspx"}})
+        with patch.object(client, "html", return_value=html) as request:
+            client.advance(page, 2)
+        posted = request.call_args.args[1]
+        self.assertEqual(posted["__EVENTTARGET"], "ctl00$cphCuerpo$realPager")
+        self.assertEqual(posted["__EVENTARGUMENT"], "Page$2")
+        self.assertEqual(posted["__VIEWSTATE"], "fresh-viewstate")
+        client.close()
+
     def test_live_period_cell_uses_fecha_cierre_and_keeps_unknown_safe(self):
         html = '''<form><table id="ctl00_cphCuerpo_gvResultados"><tr><th>Proceso</th>
         <th>Perido de Vigencia</th></tr><tr><td><a id="ctl02_hlGoTo" href="Proceso.aspx?id=1">Detalle</a></td>
