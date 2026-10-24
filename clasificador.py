@@ -188,11 +188,27 @@ def run(cfg, run_id=None, deadline=None, client=None):
                         continue
                     try:
                         check_deadline(deadline)
-                        d = parse_date(row.get("fecha_recepcion"))
-                        if row.get("extraccion_estado") != "completo" or not row.get("descripcion") or d is None:
-                            raise ValueError("Detalle incompleto: recuperar con scout antes de consumir tokens")
-                        if d.date() < now().date():
-                            raise ValueError("Proceso vencido por día: ejecutar combiner")
+                    except DeadlineReached:
+                        stopped = "limite_horario"
+                        row.update(analisis_estado="pendiente", analisis_error=stopped)
+                        state["pending"] += 1
+                        yield row
+                        continue
+
+                    d = parse_date(row.get("fecha_recepcion"))
+                    local_error = None
+                    if row.get("extraccion_estado") != "completo" or not row.get("descripcion") or d is None:
+                        local_error = "Detalle incompleto: recuperar con scout antes de consumir tokens"
+                    elif d.date() < now().date():
+                        local_error = "Proceso vencido por día: ejecutar combiner"
+                    if local_error:
+                        row.update(analisis_estado="error", analisis_error=local_error)
+                        state["errors"] += 1
+                        LOG.warning("Clasificación pendiente %s: %s", row["proceso_id"], local_error)
+                        yield row
+                        continue
+
+                    try:
                         if client is None:
                             instructions = load_instructions(cfg)
                             state["instructions_sha256"] = digest(instructions)
