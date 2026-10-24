@@ -235,3 +235,8 @@ Para una prueba manual breve contra el sitio, que no genera raw ni usa IA:
 
 Esa prueba realiza un GET inicial, la búsqueda filtrada, un detalle y, con la opción
 indicada, una segunda página, manteniendo las mismas pausas del extractor.
+
+
+## Inicio manual desde Bastion
+
+`python main.py --manual --config /ruta/config.json` inicia un ciclo nuevo de extracción, combinación y clasificación a cualquier hora. Mantiene el bloqueo compartido con cron, los checkpoints y la caché IA; no fuerza un nuevo análisis de contenido sin cambios. Su límite es 18 horas desde el inicio y no modifica la programación normal. Cada ciclo tiene un run_id manual distinto y el manifiesto indica trigger=manual. La interfaz debe usar un controlador local autorizado, sin comandos ni rutas libres.

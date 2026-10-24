@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from datetime import timedelta
 import logging
+import uuid
 
 import clasificador
 import combiner
@@ -49,13 +50,17 @@ def finish_main(cfg, state, status, reason, **extra):
     return finish(cfg, state, status, reason, **extra)
 
 
-def run(cfg):
-    window = daily_window(now(), cfg["start_hour"], cfg["end_hour"])
+def run(cfg, *, manual=False):
+    moment = now()
+    window = (("manual-" + moment.strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:12],
+               moment + timedelta(hours=18)) if manual else
+              daily_window(moment, cfg["start_hour"], cfg["end_hour"]))
     if window is None:
         LOG.info("Fuera de ventana; próxima extracción a las %02d:00 de Honduras", cfg["start_hour"])
         return {"status": "exitoso", "reason": "fuera_de_ventana", "skipped": True}
     run_id, deadline = window
     state = started("main", run_id)
+    state["trigger"] = "manual" if manual else "scheduled"
     state.update(deadline=deadline.isoformat(), output_ready=False, stages={}, retry_stages=[])
     write_json(data_path(cfg, "main.json"), state)
     try:
@@ -120,6 +125,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config")
     parser.add_argument("--check", action="store_true", help="Validar configuración sin consultar sitios ni IA")
+    parser.add_argument("--manual", action="store_true", help="Nuevo ciclo completo a cualquier hora; conserva bloqueo y caché")
     args = parser.parse_args()
     try:
         cfg = load_config(args.config)
@@ -129,7 +135,7 @@ def main():
                   (cfg["start_hour"], cfg["end_hour"], cfg["ai"].get("skill_path") or "PENDIENTE"))
             return 0
         with pipeline_lock(cfg):
-            result = run(cfg)
+            result = run(cfg, manual=args.manual)
         return 0 if result["status"] == "exitoso" else 1
     except BusyError:
         LOG.info("Otra ejecución mantiene el bloqueo; no se inicia una segunda")
