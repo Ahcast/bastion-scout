@@ -265,6 +265,35 @@ def database(cfg):
         db.close()
 
 
+def daily_counts(cfg, day=None):
+    """Count distinct processes extracted and analyzed on a Honduras calendar day."""
+    day = day or now().date().isoformat()
+    extracted = set()
+    complete = set()
+    incomplete = set()
+    analyzed = set()
+    with database(cfg) as db:
+        for record in db.execute("SELECT data FROM scan WHERE data IS NOT NULL"):
+            try:
+                row = json.loads(record["data"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            process_id = row.get("proceso_id")
+            if process_id and str(row.get("extraido_en", ""))[:10] == day:
+                extracted.add(process_id)
+                target = complete if row.get("extraccion_estado") == "completo" else incomplete
+                target.add(process_id)
+        for record in db.execute("SELECT proceso_id FROM analysis WHERE substr(analyzed_at,1,10)=?", (day,)):
+            analyzed.add(record["proceso_id"])
+    return {
+        "fecha_honduras": day,
+        "procesos_extraidos": len(extracted),
+        "detalles_completos": len(complete),
+        "detalles_incompletos": len(incomplete),
+        "procesos_analizados": len(analyzed),
+    }
+
+
 class DeadlineReached(RuntimeError):
     pass
 
