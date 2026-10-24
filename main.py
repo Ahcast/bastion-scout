@@ -9,7 +9,7 @@ import clasificador
 import combiner
 import scout
 from common import (BusyError, check_deadline, configure_logging, current_master_schema, data_path,
-                    file_hash, finish, load_config, now, pipeline_lock, read_json,
+                    daily_counts, file_hash, finish, load_config, now, pipeline_lock, read_json,
                     started, write_json)
 
 LOG = logging.getLogger("bastion")
@@ -40,6 +40,15 @@ def matching_file(cfg, name, expected):
     return bool(expected and path.exists() and file_hash(path) == expected)
 
 
+def finish_main(cfg, state, status, reason, **extra):
+    counts = daily_counts(cfg)
+    state["daily_counts"] = counts
+    LOG.info("Resumen diario Honduras %s: %s extraídos (%s completos, %s incompletos), %s analizados",
+             counts["fecha_honduras"], counts["procesos_extraidos"], counts["detalles_completos"],
+             counts["detalles_incompletos"], counts["procesos_analizados"])
+    return finish(cfg, state, status, reason, **extra)
+
+
 def run(cfg):
     window = daily_window(now(), cfg["start_hour"], cfg["end_hour"])
     if window is None:
@@ -63,7 +72,7 @@ def run(cfg):
             recovered = combiner.run(cfg, previous["run_id"])
             if recovered["status"] != "exitoso":
                 state["retry_stages"].append("combiner")
-                return finish(cfg, state, "error", "recuperacion_anterior_pendiente")
+                return finish_main(cfg, state, "error", "recuperacion_anterior_pendiente")
         scan = recorded(cfg, "scout", run_id)
         scope = {key: cfg["scout"][key] for key in ("modalidad", "tipo")}
         if not (scan.get("status") == "exitoso" and scan.get("scope") == scope
@@ -84,7 +93,7 @@ def run(cfg):
         state["stages"]["combiner"] = combined.get("status", "error")
         if combined.get("status") != "exitoso":
             state["retry_stages"].append("combiner")
-            return finish(cfg, state, "parcial", "combinacion_pendiente")
+            return finish_main(cfg, state, "parcial", "combinacion_pendiente")
 
         classified = recorded(cfg, "clasificador", run_id)
         if not (classified.get("status") == "exitoso"
@@ -95,12 +104,12 @@ def run(cfg):
             state["retry_stages"].append("clasificador")
         ready = not state["retry_stages"]
         state["output_ready"] = ready
-        return finish(cfg, state, "exitoso" if ready else "parcial",
-                      "ciclo_diario_completo" if ready else "etapas_pendientes",
-                      maestro_sha256=file_hash(master), total=combined.get("total", 0))
+        return finish_main(cfg, state, "exitoso" if ready else "parcial",
+                           "ciclo_diario_completo" if ready else "etapas_pendientes",
+                           maestro_sha256=file_hash(master), total=combined.get("total", 0))
     except Exception as exc:
         LOG.exception("Pipeline interrumpido; se conservan los archivos y checkpoints")
-        return finish(cfg, state, "error", "error_pipeline", error=str(exc))
+        return finish_main(cfg, state, "error", "error_pipeline", error=str(exc))
 
 
 def main():
