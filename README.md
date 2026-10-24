@@ -170,6 +170,12 @@ ese manifiesto. `items` contiene texto numerado con un item por línea en una ce
 CSV entrecomillada. `items_fuente` conserva el JSON de los renglones extraídos.
 La codificación del archivo es UTF-8 con BOM.
 
+`main.json` también incluye `daily_counts`, un resumen por fecha de Honduras con los
+procesos únicos extraídos ese día, cuántos tienen detalles completos o incompletos y
+cuántos procesos recibieron un análisis exitoso de IA ese día. El mismo resumen queda
+en el log al cerrar cada invocación de `main.py`; los reintentos del ciclo no duplican
+los conteos.
+
 ## Carga y ritmo de consulta
 
 Se usa una sola sesión HTTP y no hay consultas paralelas. Por defecto hay una pausa
