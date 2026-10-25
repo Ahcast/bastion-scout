@@ -19,6 +19,15 @@ independientemente de la zona horaria del servidor:
 
 No se instala un cron ni se despliega nada automáticamente.
 
+`scout.json` distingue los acumulados de la ronda (`pages`, `extracted`, `pending`)
+de `invocation`, los resultados de este intento: páginas leídas (incluye relecturas),
+última página solicitada/guardada y del último fallo de listado, detalles intentados,
+vigentes completos extraídos, incompletos, vencidos, fallidos e interrumpidos. Incluye
+detalles actuales e históricos, sin contar como descargas los recuperados del journal.
+Cada intento reinicia estos contadores; no cambia el CSV ni las reglas de extracción.
+Las fases informan su motivo de pausa y próximo reintento. Los reportes anteriores
+no permiten reconstruir estos contadores por intento y deben mostrarse como no informados.
+
 ## Instalación
 
 Python **3.10 o posterior**. En Linux, dentro de esta carpeta:

@@ -12,6 +12,10 @@ from scout_store import ScanStore
 def run(cfg, run_id=None, deadline=None, client=None):
     run_id = run_id or s.now().date().isoformat()
     state = s.started("scout", run_id)
+    invocation = dict(pages_read=0, last_attempted_page=None, last_saved_page=None,
+                      last_failed_page=None, last_error=None, details_attempted=0,
+                      extracted=0, incomplete=0, expired=0, failed=0, interrupted=0)
+    state["invocation"] = invocation
     settings = cfg["scout"]
     state.update(scanner_version=s.VERSION, pages=0, extracted=0, expired=0, pending=[], detail_errors={},
                  scope={"modalidad": settings["modalidad"], "tipo": settings["tipo"]})
@@ -64,6 +68,7 @@ def run(cfg, run_id=None, deadline=None, client=None):
                     break
                 s.check_deadline(deadline)
                 attempted_urls.add(url)
+                invocation["details_attempted"] += 1
                 history_attempts += int(historical)
                 retry = min(settings.get("detail_retry_max_seconds", 3600),
                             settings.get("detail_retry_seconds", 60) * 2 ** min(queued["attempts"], 6))
@@ -82,14 +87,20 @@ def run(cfg, run_id=None, deadline=None, client=None):
                         row["extraccion_estado"] = "incompleto"
                     message = None if complete else "Detalle sin campos obligatorios o contenido útil; grilla=" + row.get("productos_estado", "desconocida")
                     store.save(url, row, message, retry, queued["run_id"])
+                    closing = s.parse_date(row.get("fecha_recepcion"))
+                    outcome = ("expired" if closing and closing.date() < today else
+                               "extracted" if complete else "incomplete")
+                    invocation[outcome] += 1
                     failures = 0
                     progress["extraction_failures"] = 0
                     progress.pop("extraction_paused_until", None)
                 except s.DeadlineReached:
+                    invocation["interrupted"] += 1
                     if historical and s.now() < deadline:
                         break
                     raise
                 except Exception as exc:
+                    invocation["failed"] += 1
                     store.save(url, None, str(exc), retry, queued["run_id"])
                     s.LOG.warning("Detalle pendiente %s: %s", url, type(exc).__name__)
                     failures += 1
@@ -120,6 +131,8 @@ def run(cfg, run_id=None, deadline=None, client=None):
             store.capture(page, number)
 
         def after_page(page, number):
+            invocation["pages_read"] += 1
+            invocation["last_saved_page"] = number
             store.coverage(settings)
             if not page.has_next:
                 progress.update(discovery_complete=True, stop_reason="fin_resultados_verificado", coverage="fin_resultados")
@@ -146,8 +159,16 @@ def run(cfg, run_id=None, deadline=None, client=None):
                           settings.get("page_retry_attempts", 3))
             s.pause(delay, deadline)
 
+        def listing_search(restart=False):
+            invocation["last_attempted_page"] = 1
+            return client.restart_search() if restart and hasattr(client, "restart_search") else client.search()
+
+        def listing_advance(page, number):
+            invocation["last_attempted_page"] = number
+            return client.advance(page, number)
+
         def new_search():
-            return client.restart_search() if hasattr(client, "restart_search") else client.search()
+            return listing_search(restart=True)
 
         def replay_to_predecessor(target_page):
             """Rebuild fresh ASP.NET state and replay saved pages sequentially."""
@@ -162,7 +183,7 @@ def run(cfg, run_id=None, deadline=None, client=None):
                                     coverage="fin_resultados")
                     store.persist()
                     break
-                page = client.advance(page, next_number)
+                page = listing_advance(page, next_number)
                 capture_page(page, next_number)
                 after_page(page, next_number)
                 current_number = next_number
@@ -186,7 +207,7 @@ def run(cfg, run_id=None, deadline=None, client=None):
                         try:
                             if page is None:
                                 if current_number == 0 and failures == 0:
-                                    page = client.search()
+                                    page = listing_search()
                                     capture_first(page)
                                     after_page(page, 1)
                                     current_number = 1
@@ -211,14 +232,14 @@ def run(cfg, run_id=None, deadline=None, client=None):
                                     store.persist()
                                     break
                                 replay_number = current_number + 1
-                                page = client.advance(page, replay_number)
+                                page = listing_advance(page, replay_number)
                                 capture_page(page, replay_number)
                                 after_page(page, replay_number)
                                 current_number = replay_number
                             if progress["discovery_complete"]:
                                 break
                             number = progress["next_page"]
-                            page = client.advance(page, number)
+                            page = listing_advance(page, number)
                             capture_page(page, number)
                             after_page(page, number)
                             current_number = number
@@ -226,6 +247,8 @@ def run(cfg, run_id=None, deadline=None, client=None):
                         except s.DeadlineReached:
                             raise
                         except Exception as exc:
+                            invocation["last_failed_page"] = invocation["last_attempted_page"]
+                            invocation["last_error"] = str(exc)
                             if failures >= settings.get("page_retry_attempts", 3):
                                 raise
                             failures += 1
@@ -269,9 +292,11 @@ def run(cfg, run_id=None, deadline=None, client=None):
         state["ronda_actual_completa"] = bool(progress["discovery_complete"] and not pending)
         state["phases"] = {
             "discovery": {"status": "completo" if progress["discovery_complete"] else "pausado",
-                          "next_page": progress["next_page"], "next_retry": progress.get("discovery_paused_until")},
+                          "next_page": progress["next_page"], "next_retry": progress.get("discovery_paused_until"),
+                          "error": progress.get("discovery_error") if not progress["discovery_complete"] else None},
             "extraction": {"status": "completo" if not pending else "pendiente", "pending": len(pending),
-                           "next_retry": progress.get("extraction_paused_until")},
+                           "next_retry": progress.get("extraction_paused_until"),
+                           "error": progress.get("extraction_error") if pending else None},
         }
         state["coverage"] = {key: progress.get(key) for key in (
             "coverage", "early_stop_disabled", "date_inversions", "unknown_dates", "heuristic_boundary_page",
