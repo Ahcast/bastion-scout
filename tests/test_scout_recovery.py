@@ -42,7 +42,7 @@ class RecoveryTests(unittest.TestCase):
         site.broken, site.advances = False, []
         second = scout.run(self.cfg, "2026-10-21", client=site)
         self.assertTrue(second["ronda_actual_completa"])
-        self.assertEqual(site.advances, [3, 4])
+        self.assertEqual(site.advances, [2, 3, 4])  # Rebuild ViewState by replaying from page 1.
         self.assertEqual(len(site.calls), 4)
         self.assertEqual(second["pages"], 4)
         with common.database(self.cfg) as db:
@@ -70,6 +70,60 @@ class RecoveryTests(unittest.TestCase):
 
         site = Site([[values[0]["url"]], [values[1]["url"]]],
                     {row["url"]: row for row in values})
+        self.cfg["scout"].update(page_retry_cooldown_seconds=180,
+                                 page_retry_max_cooldown_seconds=600)
+        with patch.object(scout, "pause") as wait:
+            result = scout.run(self.cfg, "2026-10-21", client=site)
+        self.assertTrue(result["ronda_actual_completa"])
+        wait.assert_called_once()
+        self.assertEqual(wait.call_args.args[0], 180)
+
+    def test_pagination_http_500_retries_with_growing_delays(self):
+        values = [f.detail(i) for i in range(1, 3)]
+
+        class Site(f.FakeSite):
+            last_status_code = None
+            last_retry_after_seconds = 0
+            failures_left = 3
+
+            def advance(self, page, number):
+                if number == 2 and self.failures_left:
+                    self.failures_left -= 1
+                    self.last_status_code = 500
+                    raise RuntimeError("HonduCompras no respondió: HTTP 500")
+                self.last_status_code = None
+                return super().advance(page, number)
+
+        self.cfg["scout"].update(page_retry_cooldown_seconds=180,
+                                 page_retry_max_cooldown_seconds=600,
+                                 page_retry_attempts=3)
+        site = Site([[values[0]["url"]], [values[1]["url"]]],
+                    {row["url"]: row for row in values})
+        with patch.object(scout, "pause") as wait:
+            result = scout.run(self.cfg, "2026-10-21", client=site)
+        self.assertTrue(result["ronda_actual_completa"])
+        self.assertEqual([call.args[0] for call in wait.call_args_list], [180, 360, 600])
+        self.assertEqual(result["coverage"]["page_retries"], 3)
+
+    def test_initial_search_http_500_also_waits_before_rebuilding(self):
+        row = f.detail(1)
+
+        class Site(f.FakeSite):
+            last_status_code = None
+            last_retry_after_seconds = 0
+            failed = False
+
+            def search(self):
+                if not self.failed:
+                    self.failed = True
+                    self.last_status_code = 500
+                    raise RuntimeError("HonduCompras no respondió: HTTP 500")
+                self.last_status_code = None
+                return super().search()
+
+        self.cfg["scout"].update(page_retry_cooldown_seconds=180,
+                                 page_retry_max_cooldown_seconds=600)
+        site = Site([[row["url"]]], {row["url"]: row})
         with patch.object(scout, "pause") as wait:
             result = scout.run(self.cfg, "2026-10-21", client=site)
         self.assertTrue(result["ronda_actual_completa"])
@@ -169,13 +223,14 @@ class RecoveryTests(unittest.TestCase):
         with common.database(self.cfg) as db:
             self.assertEqual(db.execute("SELECT count(*) FROM scout_queue").fetchone()[0], 1)
 
-    def test_heuristic_stops_after_broader_audit_and_reports_coverage_limit(self):
+    def test_full_listing_continues_after_ten_expired_even_with_legacy_setting(self):
         expired = [f.detail(i, f.FIXED.date() - timedelta(days=1)) for i in range(15)]
         pages = [[r["url"] for r in expired[:10]]] + [[r["url"]] for r in expired[10:]]
+        self.cfg["scout"]["early_stop_enabled"] = True  # Existing AWS configs may contain this.
         result, site = self.scan(expired, pages)
-        self.assertEqual(result["pages"], 4)
-        self.assertEqual(result["reason"], "heuristica_10_vencidos_auditada")
-        self.assertEqual(result["coverage"]["coverage"], "heuristica_no_garantizada")
+        self.assertEqual(result["pages"], 6)
+        self.assertEqual(result["reason"], "fin_resultados_verificado")
+        self.assertEqual(result["coverage"]["coverage"], "fin_resultados")
         self.assertEqual(site.calls, [])
 
     def test_unknown_listing_date_is_queued_and_disables_early_stop(self):

@@ -131,59 +131,111 @@ def run(cfg, run_id=None, deadline=None, client=None):
             s.LOG.info("Scout ronda %s, página %s; cola durable, vencidos %s, inversiones %s",
                        run_id, number, progress.get("consecutive_expired", 0), progress.get("date_inversions", 0))
 
+        def retry_listing_wait(failure_number, deadline, context):
+            status_code = getattr(client, "last_status_code", None)
+            retry_after = getattr(client, "last_retry_after_seconds", 0)
+            base = settings.get("page_retry_cooldown_seconds", 180)
+            cap = settings.get("page_retry_max_cooldown_seconds", 600)
+            delay = min(cap, base * (2 ** max(0, failure_number - 1)))
+            delay = min(settings.get("retry_after_max_seconds", 1800),
+                        max(delay, retry_after))
+            progress["page_retries"] = progress.get("page_retries", 0) + 1
+            store.persist()
+            s.LOG.warning("Pausa de %s segundos antes de reintentar %s (HTTP %s, intento %s/%s)",
+                          int(delay), context, status_code or "sin respuesta", failure_number,
+                          settings.get("page_retry_attempts", 3))
+            s.pause(delay, deadline)
+
+        def new_search():
+            return client.restart_search() if hasattr(client, "restart_search") else client.search()
+
+        def replay_to_predecessor(target_page):
+            """Rebuild fresh ASP.NET state and replay saved pages sequentially."""
+            page = new_search()
+            capture_first(page)
+            after_page(page, 1)
+            current_number = 1
+            while current_number < target_page - 1 and not progress["discovery_complete"]:
+                next_number = current_number + 1
+                if not page.has_next:
+                    progress.update(discovery_complete=True, stop_reason="fin_resultados_verificado",
+                                    coverage="fin_resultados")
+                    store.persist()
+                    break
+                page = client.advance(page, next_number)
+                capture_page(page, next_number)
+                after_page(page, next_number)
+                current_number = next_number
+            return page, current_number
+
         try:
             if not progress["discovery_complete"] and phase_ready("discovery"):
-                number, rebuilds = 1, 0
                 remaining = max(0, (deadline - s.now()).total_seconds())
                 discovery_deadline = min(deadline, s.now() + timedelta(
-                    seconds=min(settings.get("discovery_budget_seconds", 900), remaining * .4)))
+                    seconds=min(settings.get("discovery_budget_seconds", 1500), remaining * .6)))
                 prior_deadline = getattr(client, "deadline", None)
                 if hasattr(client, "deadline"):
                     client.deadline = discovery_deadline
                 try:
-                    try:
-                        page = client.search()
-                    except s.DeadlineReached:
-                        raise
-                    except Exception:
-                        if rebuilds >= settings.get("session_rebuilds_per_invocation", 1):
-                            raise
-                        rebuilds += 1
-                        progress["session_rebuilds"] += 1
-                        page = client.restart_search() if hasattr(client, "restart_search") else client.search()
-                    capture_first(page)
-                    after_page(page, 1)
+                    number = progress.get("next_page", 1)
+                    failures = 0
+                    page = None
+                    current_number = 0
                     while not progress["discovery_complete"]:
                         s.check_deadline(discovery_deadline)
-                        number = progress["next_page"]
                         try:
-                            page = client.advance(page, number)
-                            capture_page(page, number)
-                        except s.DeadlineReached:
-                            raise
-                        except Exception as exc:
-                            if rebuilds >= settings.get("session_rebuilds_per_invocation", 1):
-                                raise
-                            status_code = getattr(client, "last_status_code", None)
-                            if status_code in {429, 500, 502, 503, 504}:
-                                retry_after = getattr(client, "last_retry_after_seconds", 0)
-                                delay = max(settings.get("page_retry_cooldown_seconds", 180), retry_after)
-                                delay = min(delay, settings.get("retry_after_max_seconds", 1800))
-                                s.LOG.warning("HTTP %s en paginación; espera %s segundos antes de reconstruir",
-                                              status_code, int(delay))
-                                s.pause(delay, discovery_deadline)
-                            rebuilds += 1
-                            progress["session_rebuilds"] += 1
-                            s.LOG.warning("Reconstruyendo búsqueda en página %s tras %s", number, type(exc).__name__)
-                            page = client.restart_search() if hasattr(client, "restart_search") else client.search()
-                            capture_first(page)
-                            if not page.has_next:
-                                after_page(page, 1)
-                                continue
+                            if page is None:
+                                if current_number == 0 and failures == 0:
+                                    page = client.search()
+                                    capture_first(page)
+                                    after_page(page, 1)
+                                    current_number = 1
+                                else:
+                                    target = max(1, progress.get("next_page", number))
+                                    if target > 1:
+                                        page, current_number = replay_to_predecessor(target)
+                                    else:
+                                        page = new_search()
+                                        capture_first(page)
+                                        after_page(page, 1)
+                                        current_number = 1
+                            if progress["discovery_complete"]:
+                                break
+                            number = progress["next_page"]
+                            # Rehydrate ViewState page by page after an hourly restart.
+                            while current_number < number - 1:
+                                if not page.has_next:
+                                    progress.update(discovery_complete=True,
+                                                    stop_reason="fin_resultados_verificado",
+                                                    coverage="fin_resultados")
+                                    store.persist()
+                                    break
+                                replay_number = current_number + 1
+                                page = client.advance(page, replay_number)
+                                capture_page(page, replay_number)
+                                after_page(page, replay_number)
+                                current_number = replay_number
+                            if progress["discovery_complete"]:
+                                break
                             number = progress["next_page"]
                             page = client.advance(page, number)
                             capture_page(page, number)
-                        after_page(page, number)
+                            after_page(page, number)
+                            current_number = number
+                            failures = 0
+                        except s.DeadlineReached:
+                            raise
+                        except Exception as exc:
+                            if failures >= settings.get("page_retry_attempts", 3):
+                                raise
+                            failures += 1
+                            progress["session_rebuilds"] = progress.get("session_rebuilds", 0) + 1
+                            retry_listing_wait(failures, discovery_deadline,
+                                               f"búsqueda/página {number} tras {type(exc).__name__}")
+                            # A new search and sequential replay avoid stale ViewState
+                            # and unsupported jumps to a distant page.
+                            page = None
+                            current_number = 0
                     progress["discovery_failures"] = 0
                     progress.pop("discovery_paused_until", None)
                 except s.DeadlineReached:
@@ -223,7 +275,8 @@ def run(cfg, run_id=None, deadline=None, client=None):
         }
         state["coverage"] = {key: progress.get(key) for key in (
             "coverage", "early_stop_disabled", "date_inversions", "unknown_dates", "heuristic_boundary_page",
-            "audit_due", "audit_omissions", "audit_omission_examples", "session_rebuilds", "listing_changed")}
+            "audit_due", "audit_omissions", "audit_omission_examples", "session_rebuilds", "page_retries",
+            "listing_changed")}
         state["pages"] = db.execute("SELECT count(*) FROM scout_page WHERE run_id=? AND generation=?",
                                     (run_id, progress["generation"])).fetchone()[0]
         state["consecutive_expired"] = progress.get("consecutive_expired", 0)

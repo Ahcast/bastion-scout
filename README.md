@@ -114,8 +114,10 @@ o error y `75` cuando otra ejecución mantiene el bloqueo.
 
 - Primero descubre enlaces usando **Fecha Cierre del listado**, por día de Honduras.
   Cada página y sus enlaces vigentes o de fecha desconocida se confirman juntos en
-  SQLite. Los vencidos quedan en el registro de página y no se descargan como detalles.
-  En el sitio, la celda «Perido de Vigencia» contiene inicio y cierre: se lee el cierre.
+  SQLite. Scout continúa hasta que el sitio indique el final del listado, aunque encuentre
+  diez o más vencidos seguidos. Los vencidos quedan registrados, pero no se descargan
+  como detalles. En el sitio, la celda «Perido de Vigencia» contiene inicio y cierre:
+  se lee el cierre.
 - Después procesa la cola guardada. Un fallo de paginación permite continuar esa cola.
   Cada respuesta de detalle se confirma antes de continuar. Al reintentar el ciclo no
   vuelve a solicitar los detalles completos que ya obtuvo.
@@ -124,11 +126,12 @@ o error y `75` cuando otra ejecución mantiene el bloqueo.
   intentos, error y próximo reintento. Se utiliza el mismo `control.sqlite3` existente.
   No se guarda ViewState: cada recuperación crea una búsqueda con los mismos filtros
   y un formulario reciente. También se conserva la acción real del paginador
-  (`__EVENTTARGET` y `Page$N`) junto al checkpoint. Tras un HTTP 500/502/503/504 o
-  429, espera al menos tres minutos —o el valor de `Retry-After`, hasta 30 minutos—
-  antes de reconstruir la búsqueda. Si cambió la primera página, se repite el prefijo
-  con deduplicación; si sigue igual, se solicita la página pendiente con el formulario
-  vigente.
+  (`__EVENTTARGET` y `Page$N`) junto al checkpoint. Al recuperarse, Scout reconstruye
+  la búsqueda y vuelve a avanzar página por página hasta el checkpoint, evitando saltos
+  que el sitio no acepte. La búsqueda y los cambios de página esperan al menos cinco
+  segundos entre solicitudes; los detalles esperan dos. Ante un fallo de listado intenta
+  recuperarse hasta tres veces, con pausas crecientes de tres, seis y hasta diez minutos,
+  respetando `Retry-After` hasta 30 minutos. Los detalles mantienen su ritmo independiente.
 - «Compra Menor» y otros valores genéricos no validan una descripción. La grilla de
   productos se registra como presente, vacía o ausente; una grilla ausente o un detalle
   sin contenido útil queda incompleto. Los campos obligatorios siguen siendo necesarios.
@@ -157,16 +160,14 @@ sin cargarse completos en memoria.
 ## Fechas, identidad y retención
 
 La vigencia se compara **por día**. Si hoy es 15, solo el 14 y las fechas anteriores
-cuentan como vencidas. Diez vencidos consecutivos proponen un corte temprano.
-Una fecha de hoy se conserva aunque su hora ya haya pasado; Bastion filtra por hora.
+cuentan como vencidas. Una fecha de hoy se conserva aunque su hora ya haya pasado;
+Bastion filtra por hora. Diez vencidos consecutivos se registran como señal, pero Scout
+no corta por esa heurística: recorre el listado completo para encontrar procesos vigentes
+que puedan aparecer después.
 
-Scout verifica el orden de las fechas de cierre a medida que descubre páginas.
-Una fecha desconocida o una inversión desactiva el corte temprano para esa ronda.
-Por defecto, todos los días audita tres páginas adicionales después del corte propuesto
-(`audit_every_days`, `audit_pages`). Un vigente posterior queda en la cola y se registra
-en `coverage.audit_omissions`; también desactiva el corte. La cobertura heurística se
-declara `heuristica_no_garantizada`, porque una auditoría finita no prueba que no haya
-otro vigente aún más abajo. `fin_resultados` indica que se llegó al final del listado.
+Scout verifica el orden de las fechas de cierre y registra fechas desconocidas e
+inversiones. `fin_resultados` indica que llegó a la última página indicada por el sitio;
+si una página falla, conserva el checkpoint y deja la fase pendiente para reintentarla.
 
 `proceso_id` se obtiene del enlace de detalle normalizado. `contenido_hash` usa la fecha
 de recepción completa, incluida su hora, y la descripción normalizada. La descripción

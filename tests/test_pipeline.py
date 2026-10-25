@@ -21,7 +21,8 @@ FIXED = datetime(2026, 10, 21, 20, tzinfo=common.HN)
 def config(directory):
     cfg = json.loads((common.ROOT / "config.example.json").read_text())
     cfg.update(_data=str(directory), _config_dir=str(directory))
-    cfg["scout"].update(detail_retry_seconds=0, cooldown_seconds=0)
+    cfg["scout"].update(detail_retry_seconds=0, cooldown_seconds=0,
+                        page_retry_cooldown_seconds=0, page_retry_max_cooldown_seconds=0)
     return cfg
 
 

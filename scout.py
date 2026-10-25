@@ -193,8 +193,11 @@ class HonduClient:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "es-HN,es;q=0.9,en;q=0.8", "Connection": "close"})
-        self.last_finished = 0.0
-        self.interval = self.cfg.get("min_interval_seconds", 1.0)
+        self.last_finished = {"listing": 0.0, "detail": 0.0}
+        self.interval = {
+            "listing": self.cfg.get("listing_min_interval_seconds", 5.0),
+            "detail": self.cfg.get("detail_min_interval_seconds", 2.0),
+        }
         self.requests = 0
         self.retries = 0
         self.last_status_code = None
@@ -210,14 +213,16 @@ class HonduClient:
         self.session.headers.update(headers)
         return self.search()
 
-    def html(self, url, data=None, attempts=None):
+    def html(self, url, data=None, attempts=None, request_kind="detail"):
         error = None
+        request_kind = "listing" if request_kind == "listing" else "detail"
         attempts = attempts or self.cfg.get("request_attempts", 3)
         self.last_status_code = None
         self.last_retry_after_seconds = 0
         for attempt in range(attempts):
             check_deadline(self.deadline)
-            pause(max(0, self.last_finished + self.interval - time.monotonic()), self.deadline)
+            pause(max(0, self.last_finished[request_kind] + self.interval[request_kind]
+                     - time.monotonic()), self.deadline)
             wait = self.cfg.get("backoff_seconds", 5) * (2 ** attempt)
             began = time.monotonic()
             remaining = ((self.deadline - now()).total_seconds() if self.deadline else 3600)
@@ -257,12 +262,15 @@ class HonduClient:
                         encoding = declared[1].decode("ascii")
                     result = body.decode(encoding, errors="replace")
                 elapsed = time.monotonic() - began
-                self.interval = max(self.cfg.get("min_interval_seconds", 1.0),
-                                    min(self.cfg.get("max_interval_seconds", 4.0), elapsed * .1))
+                self.interval[request_kind] = max(
+                    self.cfg.get(request_kind + "_min_interval_seconds", 5.0 if request_kind == "listing" else 2.0),
+                    min(self.cfg.get(request_kind + "_max_interval_seconds", 8.0 if request_kind == "listing" else 4.0),
+                        elapsed * .1))
                 return result
             except requests.RequestException as exc:
                 error = exc
-                self.interval = self.cfg.get("max_interval_seconds", 4.0)
+                self.interval[request_kind] = self.cfg.get(
+                    request_kind + "_max_interval_seconds", 8.0 if request_kind == "listing" else 4.0)
                 status_code = getattr(getattr(exc, "response", None), "status_code", None)
                 self.last_status_code = status_code
                 LOG.warning("Solicitud fallida (%s, HTTP=%s), intento %s",
@@ -273,13 +281,13 @@ class HonduClient:
                     self.retries += 1
                     pause(wait, self.deadline)
             finally:
-                self.last_finished = time.monotonic()
+                self.last_finished[request_kind] = time.monotonic()
         status_code = self.last_status_code
         reason = f"HTTP {status_code}" if status_code else type(error).__name__
         raise RuntimeError(f"HonduCompras no respondió: {reason}") from error
 
     def search(self):
-        soup = BeautifulSoup(self.html(self.url), "html.parser")
+        soup = BeautifulSoup(self.html(self.url, request_kind="listing"), "html.parser")
         try:
             data = form_data(soup)
         finally:
@@ -287,7 +295,7 @@ class HonduClient:
         data["ctl00$cphCuerpo$wpParametros$ddlModalidad"] = self.cfg["modalidad"]
         data["ctl00$cphCuerpo$wpParametros$ddlTipoAdquisicion"] = self.cfg["tipo"]
         data["ctl00$cphCuerpo$wpParametros$btnBuscar"] = "Buscar"
-        return parse_results(self.html(self.url, data, attempts=1), self.url, 1)
+        return parse_results(self.html(self.url, data, attempts=1, request_kind="listing"), self.url, 1)
 
     def advance(self, page, number):
         data = dict(page.form)
@@ -310,7 +318,7 @@ class HonduClient:
         data.update(__EVENTTARGET=target, __EVENTARGUMENT=argument)
         # A failed postback may have consumed its form state: rebuild the search
         # instead of repeatedly posting the same stale ViewState.
-        return parse_results(self.html(self.url, data, attempts=1), self.url, number)
+        return parse_results(self.html(self.url, data, attempts=1, request_kind="listing"), self.url, number)
 
     def detail(self, url, run_id):
         return parse_detail(self.html(url), url, run_id)

@@ -199,12 +199,18 @@ def load_config(path=None):
         raise ValueError("Confirma modalidad y tipo en config.json; una cadena vacía incluye todos.")
     if s.get("request_attempts", 3) < 1 or s.get("expired_streak", 10) < 1:
         raise ValueError("request_attempts y expired_streak deben ser positivos")
+    if s.get("page_retry_attempts", 3) < 0:
+        raise ValueError("page_retry_attempts no puede ser negativo")
+    for key in ("listing_min_interval_seconds", "detail_min_interval_seconds"):
+        if key in s and s[key] <= 0:
+            raise ValueError(key + " debe ser positivo")
     for key in ("invocation_budget_seconds", "discovery_budget_seconds", "detail_retry_max_seconds",
-                "cooldown_max_seconds", "audit_every_days"):
+                "cooldown_max_seconds", "audit_every_days", "page_retry_max_cooldown_seconds"):
         if key in s and s[key] <= 0:
             raise ValueError(key + " debe ser positivo")
     for key in ("historical_budget_seconds", "historical_attempts_per_invocation", "detail_retry_seconds",
-                "cooldown_seconds", "session_rebuilds_per_invocation", "audit_pages"):
+                "cooldown_seconds", "session_rebuilds_per_invocation", "audit_pages",
+                "page_retry_cooldown_seconds"):
         if key in s and s[key] < 0:
             raise ValueError(key + " no puede ser negativo")
     if cfg.get("retention_days", 30) < 1:

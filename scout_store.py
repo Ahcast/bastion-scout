@@ -177,7 +177,10 @@ class ScanStore:
                              audit_omissions=len(omissions), audit_omission_examples=omissions[:10],
                              heuristic_boundary_page=boundary, audit_due=audit_due,
                              consecutive_expired=streak, expired_listed=expired)
-        can_stop = (settings.get("early_stop_enabled", True) and boundary is not None
+        # Full listing coverage is the default. Keep the heuristic only as an
+        # explicit emergency override; a run must otherwise reach the final page.
+        can_stop = (settings.get("allow_heuristic_early_stop", False)
+                    and settings.get("early_stop_enabled", True) and boundary is not None
                     and not self.progress["early_stop_disabled"])
         audit_pages = settings.get("audit_pages", 3) if audit_due else 0
         if can_stop and self.progress.get("coverage") != "fin_resultados" and self.progress["next_page"] > boundary + audit_pages:
