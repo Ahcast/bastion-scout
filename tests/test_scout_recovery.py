@@ -223,14 +223,24 @@ class RecoveryTests(unittest.TestCase):
         with common.database(self.cfg) as db:
             self.assertEqual(db.execute("SELECT count(*) FROM scout_queue").fetchone()[0], 1)
 
-    def test_full_listing_continues_after_ten_expired_even_with_legacy_setting(self):
+    def test_full_listing_can_be_forced_by_explicit_opt_out(self):
         expired = [f.detail(i, f.FIXED.date() - timedelta(days=1)) for i in range(15)]
         pages = [[r["url"] for r in expired[:10]]] + [[r["url"]] for r in expired[10:]]
         self.cfg["scout"]["early_stop_enabled"] = True  # Existing AWS configs may contain this.
+        self.cfg["scout"]["allow_heuristic_early_stop"] = False
         result, site = self.scan(expired, pages)
         self.assertEqual(result["pages"], 6)
         self.assertEqual(result["reason"], "fin_resultados_verificado")
         self.assertEqual(result["coverage"]["coverage"], "fin_resultados")
+        self.assertEqual(site.calls, [])
+
+    def test_ten_expired_uses_audited_early_stop_by_default(self):
+        expired = [f.detail(i, f.FIXED.date() - timedelta(days=1)) for i in range(15)]
+        pages = [[r["url"] for r in expired[:10]]] + [[r["url"]] for r in expired[10:]]
+        result, site = self.scan(expired, pages)
+        self.assertEqual(result["pages"], 4)
+        self.assertEqual(result["reason"], "heuristica_10_vencidos_auditada")
+        self.assertEqual(result["coverage"]["coverage"], "heuristica_no_garantizada")
         self.assertEqual(site.calls, [])
 
     def test_unknown_listing_date_is_queued_and_disables_early_stop(self):

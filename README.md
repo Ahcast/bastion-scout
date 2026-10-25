@@ -114,10 +114,10 @@ o error y `75` cuando otra ejecución mantiene el bloqueo.
 
 - Primero descubre enlaces usando **Fecha Cierre del listado**, por día de Honduras.
   Cada página y sus enlaces vigentes o de fecha desconocida se confirman juntos en
-  SQLite. Scout continúa hasta que el sitio indique el final del listado, aunque encuentre
-  diez o más vencidos seguidos. Los vencidos quedan registrados, pero no se descargan
-  como detalles. En el sitio, la celda «Perido de Vigencia» contiene inicio y cierre:
-  se lee el cierre.
+  SQLite. Diez procesos vencidos consecutivos proponen un corte para evitar recorrer
+  páginas que probablemente solo contienen procesos fuera de alcance. Los vencidos quedan
+  registrados, pero no se descargan como detalles. En el sitio, la celda «Perido de
+  Vigencia» contiene inicio y cierre: se lee el cierre.
 - Después procesa la cola guardada. Un fallo de paginación permite continuar esa cola.
   Cada respuesta de detalle se confirma antes de continuar. Al reintentar el ciclo no
   vuelve a solicitar los detalles completos que ya obtuvo.
@@ -161,13 +161,15 @@ sin cargarse completos en memoria.
 
 La vigencia se compara **por día**. Si hoy es 15, solo el 14 y las fechas anteriores
 cuentan como vencidas. Una fecha de hoy se conserva aunque su hora ya haya pasado;
-Bastion filtra por hora. Diez vencidos consecutivos se registran como señal, pero Scout
-no corta por esa heurística: recorre el listado completo para encontrar procesos vigentes
-que puedan aparecer después.
+Bastion filtra por hora. Diez vencidos consecutivos proponen el corte; Scout revisa tres
+páginas adicionales (`audit_pages`) para detectar procesos vigentes que aparezcan después.
 
 Scout verifica el orden de las fechas de cierre y registra fechas desconocidas e
-inversiones. `fin_resultados` indica que llegó a la última página indicada por el sitio;
-si una página falla, conserva el checkpoint y deja la fase pendiente para reintentarla.
+inversiones. Una fecha desconocida, una inversión o un proceso vigente después del corte
+desactiva el corte para esa ronda y Scout sigue hasta el final. `fin_resultados` indica
+que llegó a la última página indicada por el sitio; `heuristica_no_garantizada` indica
+que terminó después de la auditoría finita. Si una página falla, conserva el checkpoint
+y deja la fase pendiente para reintentarla.
 
 `proceso_id` se obtiene del enlace de detalle normalizado. `contenido_hash` usa la fecha
 de recepción completa, incluida su hora, y la descripción normalizada. La descripción

@@ -2,16 +2,17 @@
 
 ## Actualización de cobertura y reintentos — 24 de octubre de 2026
 
-- Scout recorre el listado hasta el final indicado por HonduCompras; diez procesos
-  vencidos seguidos ya no activan un corte temprano. Solo los procesos vigentes o con
-  fecha desconocida entran en la cola de detalles.
+- Diez vencidos consecutivos activan el corte heurístico después de auditar tres páginas.
+  Una fecha desconocida, una inversión de fechas o un proceso vigente posterior desactiva
+  el corte y fuerza el recorrido hasta el final. Solo procesos vigentes o de fecha
+  desconocida entran en la cola de detalles.
 - La búsqueda y la paginación usan un intervalo base de cinco segundos; los detalles,
   dos segundos. Una falla de listado permite tres reintentos con pausas de 3, 6 y hasta
   10 minutos. La sesión se reconstruye y las páginas se reproducen en orden hasta el
   checkpoint guardado; los detalles completos permanecen deduplicados en SQLite.
-- **53 pruebas locales aprobadas**, incluidas tres respuestas HTTP 500 seguidas con
+- **54 pruebas locales aprobadas**, incluidas tres respuestas HTTP 500 seguidas con
   recuperación al cuarto intento, espera en la búsqueda inicial, reanudación secuencial
-  tras la página 3 y recorrido completo después de diez vencidos.
+  tras la página 3, el corte tras diez vencidos y el opt-out de ese corte.
 - `main.py --check --config config.example.json` y compilación de módulos aprobados.
 - La paginación real del sitio debe confirmarse en la siguiente extracción; las pruebas
   de HTTP 500 usan un sitio simulado y no miden la disponibilidad remota.
