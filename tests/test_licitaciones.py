@@ -166,13 +166,17 @@ class LicitacionesTest(unittest.TestCase):
         first = json.loads(feed_path.read_text(encoding="utf-8"))["items"][0]
         active = list(rows(self.output / status["csv"]))
         active[0]["extraido_en"] = "2026-11-06T12:05:00-06:00"
+        ordinary = dict(active[0], expediente="Sin prioridad", url=active[0]["url"].replace("id=A", "id=ordinary"),
+                        fecha_recepcion="2026-11-06T13:00:00-06:00", coincidencias_interes="", evidencia_interes="")
         with closing(sqlite3.connect(self.output / "licitaciones.sqlite3")) as db:
-            scanner.publish_shortlist(db, self.output, active, [active[0]["url"]], {"status": "parcial"})
-            same = json.loads(feed_path.read_text(encoding="utf-8"))["items"][0]
+            scanner.publish_shortlist(db, self.output, [ordinary, *active], [active[0]["url"]], {"status": "parcial"})
+            items = json.loads(feed_path.read_text(encoding="utf-8"))["items"]
+            self.assertEqual([item["expediente"] for item in items], ["A", "Sin prioridad"])
+            same = items[0]
             self.assertEqual(same["version"], first["version"])
             scanner.publish_shortlist(db, self.output, [], [], {"status": "parcial"})
             retained = json.loads(feed_path.read_text(encoding="utf-8"))
-            self.assertEqual(len(retained["items"]), 1)
+            self.assertEqual(len(retained["items"]), 2)
             active[0]["lugar_recepcion"] = "Nueva oficina de la UCP"
             scanner.publish_shortlist(db, self.output, active, [active[0]["url"]], {"status": "exitoso"})
             changed = json.loads(feed_path.read_text(encoding="utf-8"))["items"][0]

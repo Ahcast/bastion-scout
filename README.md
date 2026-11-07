@@ -33,8 +33,8 @@ Los archivos se guardan en `data/licitaciones/`:
 - `licitaciones_interes.csv` reúne las coincidencias y los posibles JICA. En un recorrido
   parcial se llama `licitaciones_interes_parcial.csv`.
 - `licitaciones.json` identifica el CSV de la última ejecución y explica los pendientes.
-- `lista_corta.json` entrega a Bastion las oportunidades de interés con identidad,
-  primera detección y versión estable. Una extracción parcial conserva las oportunidades
+- `lista_corta.json` entrega a Procesos → Licitación todas las fichas vigentes con identidad,
+  primera detección y versión estable, priorizando JICA, BID y UCP. Una extracción parcial conserva las oportunidades
   anteriores que siguen vigentes. Una relectura sin cambios conserva su versión.
 
 El código de salida es `0` para un recorrido completo, `2` para uno parcial y `1` para
@@ -42,7 +42,7 @@ un error de ejecución local. Si repites un recorrido parcial el mismo día, el 
 relee el listado y reutiliza las fichas ya guardadas en SQLite. El presupuesto de cada
 intento es de 45 minutos y se puede cambiar con `--timeout-minutes`.
 
-Para alimentar la Lista corta de Bastion, usar
+Para alimentar Procesos → Licitación en Bastion, usar
 `--output-dir /var/lib/bastion-scout/licitaciones` y conceder al backend lectura del
 directorio y del JSON. Los ejemplos de `deploy/` permiten programar un recorrido
 por hora con systemd. El ejemplo usa el usuario operativo actual `ubuntu`, grupo

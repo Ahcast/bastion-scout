@@ -201,6 +201,12 @@ def parse_detail(soup, url, expected):
     return row
 
 
+def interest_priority(row):
+    tags = row["coincidencias_interes"].split(" | ")
+    return next((index for index, tag in enumerate(("JICA", "BID", "UCP")) if tag in tags),
+                3 if row["posibles_interes"] else 4)
+
+
 class Client:
     def __init__(self, session, deadline):
         self.session = session
@@ -258,8 +264,6 @@ def publish_shortlist(db, output, active, observed, status):
         else:
             db.executemany("UPDATE lista_corta SET active=0 WHERE id=?", ((digest(url),) for url in observed))
         for row in active:
-            if not (row["coincidencias_interes"] or row["posibles_interes"]):
-                continue
             identifier = digest(row["url"])
             content = {key: row[key] for key in FIELDS if key != "extraido_en"}
             version = digest(content)
@@ -276,8 +280,8 @@ def publish_shortlist(db, output, active, observed, status):
         if deadline and deadline > now():
             items.append(dict(row, id=identifier, version=version, first_seen_at=first_seen,
                               updated_at=changed, fecha_recepcion=deadline.isoformat()))
-    items.sort(key=lambda row: (row["fecha_recepcion"], row["id"]))
-    feed = {"schema_version": 1, "generated_at": timestamp, "scan_status": status["status"],
+    items.sort(key=lambda row: (interest_priority(row), row["fecha_recepcion"], row["id"]))
+    feed = {"schema_version": 2, "generated_at": timestamp, "scan_status": status["status"],
             "items": items}
     if len(items) > 5000 or len((json.dumps(feed, ensure_ascii=False, indent=2) + "\n").encode("utf-8")) > 8 * 1024 * 1024:
         raise ValueError("La lista corta supera 5000 fichas u 8 MiB")
