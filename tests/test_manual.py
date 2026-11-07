@@ -16,7 +16,7 @@ class ManualPipelineTests(unittest.TestCase):
             master = Path(directory)/'maestro.csv'
             master.write_text('synthetic')
             cfg = {'start_hour':19, 'end_hour':13, 'scout':{'modalidad':'2','tipo':'1'}}
-            with patch.object(main,'now',return_value=moment), patch.object(main,'data_path',side_effect=lambda cfg,name:Path(directory)/name), patch.object(main,'read_json',return_value={}), patch.object(main,'write_json'), patch.object(main,'finish_main',side_effect=lambda cfg,state,status,reason,**kw:dict(state,status=status,**kw)), patch.object(main.scout,'run',return_value={'status':'exitoso','raw_sha256':'synthetic'}) as scan, patch.object(main.combiner,'run',return_value={'status':'exitoso','total':0}) as combine, patch.object(main.clasificador,'run',return_value={'status':'exitoso'}) as classify:
+            with patch.object(main,'now',return_value=moment), patch('common.now',return_value=moment), patch.object(main,'data_path',side_effect=lambda cfg,name:Path(directory)/name), patch.object(main,'read_json',return_value={}), patch.object(main,'write_json'), patch.object(main,'finish_main',side_effect=lambda cfg,state,status,reason,**kw:dict(state,status=status,**kw)), patch.object(main.scout,'run',return_value={'status':'exitoso','raw_sha256':'synthetic'}) as scan, patch.object(main.combiner,'run',return_value={'status':'exitoso','total':0}) as combine, patch.object(main.clasificador,'run',return_value={'status':'exitoso'}) as classify:
                 normal=main.run(cfg)
                 self.assertTrue(normal['skipped'])
                 scan.assert_not_called()

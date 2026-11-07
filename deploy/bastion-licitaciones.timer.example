@@ -1,0 +1,12 @@
+[Unit]
+Description=Actualizar la lista corta de licitaciones cada hora
+
+[Timer]
+OnBootSec=2min
+OnCalendar=hourly
+AccuracySec=1min
+Persistent=true
+Unit=bastion-licitaciones.service
+
+[Install]
+WantedBy=timers.target

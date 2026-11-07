@@ -1,0 +1,20 @@
+[Unit]
+Description=Bastion licitaciones BID JICA UCP
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=bastion
+WorkingDirectory=/opt/bastion-scout
+ExecStart=/opt/bastion-scout/.venv/bin/python /opt/bastion-scout/scout_licitaciones.py --output-dir /var/lib/bastion-scout/licitaciones --timeout-minutes 45
+SuccessExitStatus=2
+TimeoutStartSec=50min
+KillMode=control-group
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/bastion-scout/licitaciones
+UMask=0027

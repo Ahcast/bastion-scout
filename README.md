@@ -4,6 +4,50 @@ Extractor secuencial de HonduCompras para alimentar Bastion. Mantiene los filtro
 crawler anterior: Compra Menor (`2`) y Suministro de Bienes y/o Servicios (`1`).
 El crawler anterior permanece independiente.
 
+## Escáner de licitaciones
+
+Desde esta carpeta, con las dependencias de `requirements.txt` instaladas:
+
+```bash
+python scout_licitaciones.py
+```
+
+Busca licitaciones públicas y privadas en **Recepción de Ofertas** para todos los tipos
+de adquisición. HonduCompras agrupa las licitaciones y los concursos en el formulario,
+por lo que el escáner los separa por la modalidad publicada. Omite fichas cuyo cierre en
+el listado es anterior al día actual. Para las demás, confirma la fecha de recepción y
+la etapa en la ficha. Exporta el expediente, entidad, modalidad, objeto, plazo, lugar
+de recepción y enlace al proceso. Incluye la unidad de compra, el tipo de fuente y la
+fuente de financiamiento publicados en la ficha.
+
+`coincidencias_interes` señala menciones de BID, UCP o JICA, incluyendo sus nombres
+completos, en la fuente, unidad, entidad, objeto, lugar o expediente. `evidencia_interes`
+conserva el campo y el texto que originaron cada señal. La fuente Japón se registra
+como posible JICA en `posibles_interes` para verificarla en los documentos del proceso.
+UCP se interpreta como Unidad Coordinadora de Proyectos o Programas.
+
+Los archivos se guardan en `data/licitaciones/`:
+
+- `licitaciones.csv` contiene el último recorrido completo.
+- `licitaciones_parcial.csv` contiene el resultado cuando quedan fichas o listados pendientes.
+- `licitaciones_interes.csv` reúne las coincidencias y los posibles JICA. En un recorrido
+  parcial se llama `licitaciones_interes_parcial.csv`.
+- `licitaciones.json` identifica el CSV de la última ejecución y explica los pendientes.
+- `lista_corta.json` entrega a Bastion las oportunidades de interés con identidad,
+  primera detección y versión estable. Una extracción parcial conserva las oportunidades
+  anteriores que siguen vigentes. Una relectura sin cambios conserva su versión.
+
+El código de salida es `0` para un recorrido completo, `2` para uno parcial y `1` para
+un error de ejecución local. Si repites un recorrido parcial el mismo día, el escáner
+relee el listado y reutiliza las fichas ya guardadas en SQLite. El presupuesto de cada
+intento es de 45 minutos y se puede cambiar con `--timeout-minutes`.
+
+Para alimentar la Lista corta de Bastion, usar
+`--output-dir /var/lib/bastion-scout/licitaciones` y conceder al backend lectura del
+directorio y del JSON. Los ejemplos de `deploy/` permiten programar un recorrido
+por hora con systemd. El ejemplo usa el usuario operativo actual `ubuntu`, grupo
+`bastion` y permisos `0750`/`0640` para compartir la lectura de la lista corta.
+
 ## Ejecución diaria
 
 Programa `main.py` cada hora. El programa interpreta siempre la hora de Honduras,

@@ -113,7 +113,7 @@ def file_hash(path):
 
 
 @contextmanager
-def atomic_text(path, encoding="utf-8"):
+def atomic_text(path, encoding="utf-8", mode=None):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
@@ -122,14 +122,16 @@ def atomic_text(path, encoding="utf-8"):
             yield f
             f.flush()
             os.fsync(f.fileno())
+        if mode is not None:
+            os.chmod(temporary, mode)
         os.replace(temporary, path)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
 
 
-def write_json(path, value):
-    with atomic_text(path) as f:
+def write_json(path, value, mode=None):
+    with atomic_text(path, mode=mode) as f:
         json.dump(value, f, ensure_ascii=False, indent=2)
         f.write("\n")
 
