@@ -185,6 +185,24 @@ class LicitacionesTest(unittest.TestCase):
             scanner.publish_shortlist(db, self.output, [], [], {"status": "exitoso"})
             self.assertEqual(json.loads(feed_path.read_text(encoding="utf-8"))["items"], [])
 
+    @patch.object(scanner, "OpenAIClient")
+    @patch.object(scanner, "load_instructions", return_value="Skill de prueba")
+    def test_scoring_reuses_cache_and_preserves_alert_identity(self, instructions, client):
+        status = self.scan()
+        feed_path = self.output / "lista_corta.json"
+        before = json.loads(feed_path.read_text(encoding="utf-8"))["items"][0]
+        classification = {"puntaje": 0, "rubro": "Salud", "resumen": "Insumos médicos.", "items": []}
+        client.return_value.classify.return_value = classification
+        cfg = {"ai": {"model": "test"}}
+        for _ in range(2):
+            scanner.score_shortlist(self.output, status, cfg, NOW + timedelta(minutes=1))
+        client.return_value.classify.assert_called_once()
+        self.assertEqual(client.return_value.classify.call_args.args[0]["descripcion"], before["objeto"])
+        self.scan()
+        after = json.loads(feed_path.read_text(encoding="utf-8"))["items"][0]
+        self.assertEqual(after.pop("clasificacion"), classification)
+        self.assertEqual(after, before)
+
 
 if __name__ == "__main__":
     unittest.main()

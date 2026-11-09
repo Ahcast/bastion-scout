@@ -15,7 +15,8 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 import requests
 from bs4 import BeautifulSoup
 
-from common import (ROOT, BusyError, DeadlineReached, check_deadline, normalize, now,
+from clasificador import AIError, OpenAIClient, load_instructions
+from common import (ROOT, BusyError, DeadlineReached, check_deadline, load_config, normalize, now,
                     digest, parse_date, pause, pipeline_lock, plain, read_json, stamp,
                     useful_description, write_csv, write_json)
 
@@ -272,6 +273,10 @@ def publish_shortlist(db, output, active, observed, status):
                 updated_at=CASE WHEN version<>excluded.version THEN excluded.updated_at ELSE updated_at END,
                 version=excluded.version, active=1""",
                        (identifier, json.dumps(row, ensure_ascii=False), version, timestamp, timestamp))
+    write_shortlist(db, output, status)
+
+
+def shortlist_rows(db):
     items = []
     for identifier, data, version, first_seen, changed in db.execute(
             "SELECT id,data,version,first_seen_at,updated_at FROM lista_corta WHERE active=1"):
@@ -281,11 +286,67 @@ def publish_shortlist(db, output, active, observed, status):
             items.append(dict(row, id=identifier, version=version, first_seen_at=first_seen,
                               updated_at=changed, fecha_recepcion=deadline.isoformat()))
     items.sort(key=lambda row: (interest_priority(row), row["fecha_recepcion"], row["id"]))
-    feed = {"schema_version": 2, "generated_at": timestamp, "scan_status": status["status"],
+    return items
+
+
+def write_shortlist(db, output, status):
+    db.execute("""CREATE TABLE IF NOT EXISTS puntajes (
+        id TEXT PRIMARY KEY, version TEXT NOT NULL, perfil TEXT NOT NULL, resultado TEXT NOT NULL)""")
+    items = shortlist_rows(db)
+    scores = {identifier: json.loads(result) for identifier, result in db.execute("""
+        SELECT p.id,p.resultado FROM puntajes p
+        JOIN lista_corta l ON l.id=p.id AND l.version=p.version WHERE l.active=1""")}
+    for row in items:
+        score = scores.get(row["id"])
+        if score is not None:
+            row["clasificacion"] = score
+    feed = {"schema_version": 2, "generated_at": status.get("finished_at") or stamp(), "scan_status": status["status"],
             "items": items}
+    if scores and len((json.dumps(feed, ensure_ascii=False, indent=2) + "\n").encode("utf-8")) > 8 * 1024 * 1024:
+        for row in items:
+            row.pop("clasificacion", None)
+        print("Puntuaciones omitidas de la entrega por el límite de 8 MiB", file=sys.stderr)
     if len(items) > 5000 or len((json.dumps(feed, ensure_ascii=False, indent=2) + "\n").encode("utf-8")) > 8 * 1024 * 1024:
         raise ValueError("La lista corta supera 5000 fichas u 8 MiB")
     write_json(output / "lista_corta.json", feed, mode=0o640)
+
+
+def score_shortlist(output, status, cfg, deadline):
+    instructions = load_instructions(cfg) + (
+        "\nEvalúa la licitación con su objeto publicado. Si falta el detalle de los bienes "
+        "o servicios, indícalo en el resumen y evita inferir especificaciones."
+    )
+    profile = digest([cfg["ai"]["model"], instructions])
+    ai = OpenAIClient(cfg, instructions, deadline)
+    try:
+        with closing(sqlite3.connect(output / "licitaciones.sqlite3")) as db:
+            scored = set(db.execute("""SELECT p.id,p.version FROM puntajes p
+                JOIN lista_corta l ON l.id=p.id AND l.version=p.version
+                WHERE l.active=1 AND p.perfil=?""", (profile,)))
+            completed = 0
+            for row in shortlist_rows(db):
+                key = (row["id"], row["version"])
+                if key in scored:
+                    continue
+                try:
+                    check_deadline(deadline)
+                    result = ai.classify(dict(row, descripcion=row["objeto"]))
+                except DeadlineReached:
+                    break
+                except (AIError, ValueError) as exc:
+                    print(f"Puntuación pendiente para {row['expediente']}: {type(exc).__name__}", file=sys.stderr)
+                    if isinstance(exc, AIError) and exc.stop:
+                        break
+                    continue
+                with db:
+                    db.execute("INSERT OR REPLACE INTO puntajes VALUES (?,?,?,?)",
+                               (*key, profile, json.dumps(result, ensure_ascii=False)))
+                completed += 1
+            if completed:
+                write_shortlist(db, output, status)
+            print(f"Puntuación de licitaciones: {completed} nuevas, {len(scored)} en caché")
+    finally:
+        ai.close()
 
 
 def scan(output, client):
@@ -363,13 +424,26 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, default=ROOT / "data" / "licitaciones")
     parser.add_argument("--timeout-minutes", type=int, default=45)
+    parser.add_argument("--config", help="Configuración de Scout para puntuar con su skill de clasificación")
     args = parser.parse_args()
     if args.timeout_minutes < 1:
         parser.error("--timeout-minutes debe ser positivo")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     try:
         with pipeline_lock({"_data": args.output_dir}), requests.Session() as session:
-            status = scan(args.output_dir, Client(session, now() + timedelta(minutes=args.timeout_minutes)))
+            deadline = now() + timedelta(minutes=args.timeout_minutes)
+            reserve = timedelta(minutes=min(8, args.timeout_minutes / 3)) if args.config else timedelta()
+            status = scan(args.output_dir, Client(session, deadline - reserve))
+            if args.config:
+                try:
+                    cfg = load_config(args.config)
+                    credential = os.environ.get("CREDENTIALS_DIRECTORY")
+                    if credential:
+                        key = (Path(credential) / "ai-api-key").read_text().strip()
+                        os.environ[cfg["ai"].get("api_key_env", "BASTION_AI_API_KEY")] = key
+                    score_shortlist(args.output_dir, status, cfg, deadline)
+                except (OSError, sqlite3.Error, ValueError) as exc:
+                    print(f"Puntuación de licitaciones pendiente: {type(exc).__name__}", file=sys.stderr)
     except (BusyError, OSError, sqlite3.Error, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1

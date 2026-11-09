@@ -52,6 +52,14 @@ ciclo manual. El servicio debe ejecutarse con el usuario de Scout, `ubuntu` en
 el ejemplo. El grupo `bastion` y los permisos `0750`/`0640` comparten la lectura
 de la lista corta con el backend.
 
+Con `--config`, Licitación reutiliza la skill privada de clasificación de Scout
+para asignar un puntaje comercial de 0 a 100, rubro, resumen e ítems identificables
+en el objeto publicado. Primero publica todas las fichas y luego agrega los
+puntajes al JSON de Bastion. Guarda cada resultado por ficha, versión y perfil de
+clasificación para reanudar pendientes sin repetir resultados. El servicio de
+ejemplo lee la clave de IA mediante una credencial de systemd. El puntaje no
+cambia las coincidencias, el orden por JICA/BID/UCP ni las alertas.
+
 ## Ejecución diaria
 
 Programa `main.py` cada hora. El programa interpreta siempre la hora de Honduras,
