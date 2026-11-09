@@ -44,9 +44,13 @@ intento es de 45 minutos y se puede cambiar con `--timeout-minutes`.
 
 Para alimentar Procesos → Licitación en Bastion, usar
 `--output-dir /var/lib/bastion-scout/licitaciones` y conceder al backend lectura del
-directorio y del JSON. Los ejemplos de `deploy/` permiten programar un recorrido
-por hora con systemd. El ejemplo usa el usuario operativo actual `ubuntu`, grupo
-`bastion` y permisos `0750`/`0640` para compartir la lectura de la lista corta.
+directorio y del JSON. El temporizador de `deploy/` programa recorridos de 13:05
+a 18:05, cada hora de Honduras, durante la pausa diaria de Compra Menor. Los turnos
+perdidos se omiten. El servicio toma el mismo bloqueo que Scout (`pipeline.lock`
+en su directorio de datos) y omite el turno si Scout ya lo tiene, incluso en un
+ciclo manual. El servicio debe ejecutarse con el usuario de Scout, `ubuntu` en
+el ejemplo. El grupo `bastion` y los permisos `0750`/`0640` comparten la lectura
+de la lista corta con el backend.
 
 ## Ejecución diaria
 

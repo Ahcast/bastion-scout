@@ -1,11 +1,10 @@
 [Unit]
-Description=Actualizar la lista corta de licitaciones cada hora
+Description=Actualizar la lista de licitaciones durante la pausa de Scout
 
 [Timer]
-OnBootSec=2min
-OnCalendar=hourly
+OnCalendar=*-*-* 13..18:05:00 America/Tegucigalpa
 AccuracySec=1min
-Persistent=true
+Persistent=false
 Unit=bastion-licitaciones.service
 
 [Install]
